@@ -1,0 +1,44 @@
+[project]
+name = "redis-agent-memory-demo"
+dynamic = ["version"]
+description = "Redis Agent Memory Server Demo"
+requires-python = ">=3.12"
+dependencies = [
+    "gradio>=6.9.0",
+    "dotenv>=0.9.9",
+    "openai>=2.26.0",
+    "agent-memory-client>=0.14.0",
+    "langchain>=1.2.10",
+    "langchain_core>=1.2.17",
+    "langchain_openai>=1.1.10"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/mminichino/redis-agent-memory-demo/tree/master/src"
+
+[project.scripts]
+memory_demo = "memory_demo.memory_demo:main"
+
+[dependency-groups]
+test = [
+    "pytest>=8.1.1",
+    "pytest-asyncio>=0.23.6",
+    "pytest-rerunfailures>=10.3",
+    "pytest-mock>=3.6.1",
+]
+dev = [
+    "hatch",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/memory_demo/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+packages = ["src/memory_demo"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/memory_demo"]
