@@ -1,15 +1,16 @@
 import json
 import os
-import asyncio
 import uuid
 import gradio as gr
+import re
 from dotenv import load_dotenv
 from pathlib import Path
 from agent_memory_client import MemoryAPIClient, MemoryClientConfig
-from agent_memory_client.models import WorkingMemory
+from agent_memory_client.models import WorkingMemory, ClientMemoryRecord, MemoryTypeEnum
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from memory_demo import __version__ as app_version
+from functools import partial
 import logging
 import base64
 
@@ -28,7 +29,10 @@ APP_PASSWORD = os.getenv("APP_PASSWORD", "password")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2-chat-latest")
+CHAT_A_URL = os.getenv("CHAT_A_URL", "http://localhost:8000")
+CHAT_B_URL = os.getenv("CHAT_B_URL", "http://localhost:8000")
 SESSION_ID = str(uuid.uuid4())
+USER_ID = "demo"
 
 SYSTEM_PROMPT = {
     "role": "system",
@@ -84,10 +88,14 @@ web_search_function = {
 
 available_functions = [web_search_function]
 
-memory_client_config = MemoryClientConfig(
-    base_url="http://localhost:8000"
+memory_client_config_a = MemoryClientConfig(
+    base_url=CHAT_A_URL
 )
-memory_client = MemoryAPIClient(memory_client_config)
+memory_client_config_b = MemoryClientConfig(
+    base_url=CHAT_B_URL
+)
+memory_client_a = MemoryAPIClient(memory_client_config_a)
+memory_client_b = MemoryAPIClient(memory_client_config_b)
 memory_tool_schemas = MemoryAPIClient.get_all_memory_tool_schemas()
 for tool_schema in memory_tool_schemas:
     available_functions.append(tool_schema["function"])
@@ -288,28 +296,60 @@ button.primary:hover, .gr-button-primary:hover {
 .h1 { color: var(--ink) !important; background: transparent !important; }
 """
 
-def _get_namespace(user_id: str) -> str:
+async def _extract_preferences(messages: list) -> list[str]:
+    extraction_prompt = [
+        {"role": "system", "content": "You are a helpful assistant that extracts personal user preferences from a conversation. "
+                                     "Provide a list of concise strings representing the user's preferences, "
+                                     "such as 'User likes coffee', 'User prefers dark mode', etc. "
+                                     "If no preferences are found, return an empty list. "
+                                     "Return the result as a JSON array of strings."},
+        {"role": "user", "content": f"Extract preferences from these messages: {json.dumps(messages)}"}
+    ]
+    try:
+        response = llm.invoke(extraction_prompt)
+        content = str(response.content)
+
+        match = re.search(r"\[.*]", content, re.DOTALL)
+        if match:
+            preferences = json.loads(match.group(0))
+            if isinstance(preferences, list):
+                return [str(p) for p in preferences]
+    except Exception as e:
+        logger.error(f"Error extracting preferences: {e}")
+    return []
+
+async def _get_memory_client(scenario: str) -> MemoryAPIClient:
+    if scenario == "A":
+        return memory_client_a
+    elif scenario == "B":
+        return memory_client_b
+    else:
+        raise ValueError(f"Unknown scenario: {scenario}")
+
+async def _get_namespace(user_id: str) -> str:
     return f"demo_agent:{user_id}"
 
-async def _get_working_memory(session_id: str, user_id: str) -> WorkingMemory:
+async def _get_working_memory(session_id: str, user_id: str, scenario: str) -> WorkingMemory:
+    memory_client = await _get_memory_client(scenario)
     created, result = await memory_client.get_or_create_working_memory(
         session_id=session_id,
-        namespace=_get_namespace(user_id),
+        namespace=await _get_namespace(user_id),
         model_name="gpt-5.2-chat-latest",
     )
     return WorkingMemory(**result.model_dump())
 
-async def _add_message_to_working_memory(session_id: str, user_id: str, role: str, content: str):
+async def _add_message_to_working_memory(session_id: str, user_id: str, role: str, content: str, scenario: str):
+    memory_client = await _get_memory_client(scenario)
     new_message = [{"role": role, "content": content}]
     await memory_client.get_or_create_working_memory(
         session_id=session_id,
-        namespace=_get_namespace(user_id),
+        namespace=await _get_namespace(user_id),
         model_name="gpt-5.2-chat-latest",
     )
     await memory_client.append_messages_to_working_memory(
         session_id=session_id,
         messages=new_message,
-        namespace=_get_namespace(user_id),
+        namespace=await _get_namespace(user_id),
     )
 
 async def _search_web(query: str) -> str:
@@ -388,14 +428,16 @@ async def _handle_memory_tool_call(
         context_messages: list,
         session_id: str,
         user_id: str,
+        scenario: str,
 ) -> str:
+    memory_client = await _get_memory_client(scenario)
     function_name = function_call["name"]
 
     print("Accessing memory...")
     result = await memory_client.resolve_tool_call(
         tool_call=function_call,
         session_id=session_id,
-        namespace=_get_namespace(user_id),
+        namespace=await _get_namespace(user_id),
     )
 
     if not result["success"]:
@@ -443,6 +485,7 @@ async def _handle_function_call(
         context_messages: list,
         session_id: str,
         user_id: str,
+        scenario: str,
 ) -> str:
     function_name = function_call["name"]
 
@@ -450,14 +493,16 @@ async def _handle_function_call(
         return await _handle_web_search_call(function_call, context_messages)
 
     return await _handle_memory_tool_call(
-        function_call, context_messages, session_id, user_id
+        function_call, context_messages, session_id, user_id, scenario
     )
 
 async def _generate_response(
         session_id: str,
         user_id: str,
+        scenario: str,
 ) -> str:
-    working_memory = await _get_working_memory(session_id, user_id)
+    memory_client = await _get_memory_client(scenario)
+    working_memory = await _get_working_memory(session_id, user_id, scenario)
     context_messages = working_memory.messages
 
     context_messages_dicts = []
@@ -545,7 +590,7 @@ async def _generate_response(
                                 ),
                             },
                             session_id=session_id,
-                            namespace=_get_namespace(user_id),
+                            namespace=await _get_namespace(user_id),
                             user_id=user_id,
                         )
                 except Exception as e:
@@ -623,7 +668,7 @@ async def _generate_response(
                             fres = await memory_client.resolve_tool_call(
                                 tool_call={"name": fname, "arguments": json.dumps(fargs) if not isinstance(fargs, str) else fargs},
                                 session_id=session_id,
-                                namespace=_get_namespace(user_id),
+                                namespace=await _get_namespace(user_id),
                                 user_id=user_id,
                             )
                     except Exception as e:
@@ -694,6 +739,7 @@ async def _generate_response(
                 context_messages,
                 session_id,
                 user_id,
+                scenario,
             )
 
         response_content = str(response.content)
@@ -716,14 +762,16 @@ async def process_user_input(
         user_input: str,
         session_id: str,
         user_id: str,
+        scenario: str,
 ) -> str:
+    memory_client = await _get_memory_client(scenario)
     try:
         await _add_message_to_working_memory(
-            session_id, user_id, "user", user_input
+            session_id, user_id, "user", user_input, scenario
         )
 
         response = await _generate_response(
-            session_id, user_id
+            session_id, user_id, scenario
         )
 
         if not response or not response.strip():
@@ -731,22 +779,44 @@ async def process_user_input(
             response = "I'm sorry, I encountered an error generating a response to your request."
 
         await _add_message_to_working_memory(
-            session_id, user_id, "assistant", response
+            session_id, user_id, "assistant", response, scenario
         )
+
+        try:
+            working_memory = await _get_working_memory(session_id, user_id, scenario)
+            preferences = await _extract_preferences(
+                [{"role": msg.role, "content": msg.content} for msg in working_memory.messages]
+            )
+            if preferences:
+                logger.info(f"Extracted preferences: {preferences}")
+                memories = [
+                    ClientMemoryRecord(
+                        text=pref,
+                        user_id=user_id,
+                        namespace=await _get_namespace(user_id),
+                        memory_type=MemoryTypeEnum.SEMANTIC
+                    )
+                    for pref in preferences
+                ]
+                await memory_client.create_long_term_memory(memories)
+                logger.info(f"Stored {len(memories)} preferences in long-term memory")
+        except Exception as e:
+            logger.error(f"Error storing preferences: {e}")
+
         return response
 
     except Exception as e:
         logger.exception(f"Error processing user input: {e}")
         return "I'm sorry, I encountered an error processing your request."
 
-async def chat_fn(message, _):
-    reply = await process_user_input(message, SESSION_ID, "demo")
-    partial = ""
+async def chat_fn(message, _, scenario):
+    logger.info(f"Received message from chat: {scenario}")
+    reply = await process_user_input(message, SESSION_ID, USER_ID, scenario)
+    builder = ""
 
     for ch in reply:
-        await asyncio.sleep(0.02)
-        partial += ch
-        yield partial
+        builder += ch
+        yield builder
 
 # ============== APP ==============
 with gr.Blocks(title="Redis Memory Server Demo") as demo:
@@ -797,17 +867,19 @@ with gr.Blocks(title="Redis Memory Server Demo") as demo:
     # Scenarios A and B (side by side)
     with gr.Row(elem_classes=["scenarios"]):
         # --- Scenario A ---
+        chat_a = partial(chat_fn, scenario="A")
         with gr.Column(elem_classes=["card"]):
             gr.Markdown("<div class='card-title'>Chat 🅰️</div>")
             gr.ChatInterface(
-                fn=chat_fn,
+                fn=chat_a
             )
 
         # --- Scenario B ---
+        chat_b = partial(chat_fn, scenario="B")
         with gr.Column(elem_classes=["card"]):
             gr.Markdown("<div class='card-title'>Chat 🅱️</div>")
             gr.ChatInterface(
-                fn=chat_fn,
+                fn=chat_b
             )
 
 # ============== PASSWORD PROTECTION ==============
