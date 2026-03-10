@@ -8,13 +8,16 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 import gradio as gr
 from dotenv import load_dotenv
+from pathlib import Path
 import openai
 from agent_memory_client import MemoryAPIClient, MemoryClientConfig
 from agent_memory_client.integrations.langchain import get_memory_tools
 from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
+from memory_demo import __version__ as app_version
 import logging
+import base64
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
@@ -24,6 +27,9 @@ logger = logging.getLogger(__name__)
 # ============== Env & Clients ==============
 load_dotenv()
 
+LOGO_PATH = Path(__file__).parent / "public" / "logo.png"
+LOGO_B64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("utf-8")
+LOGO_SRC = f"data:image/png;base64,{LOGO_B64}"
 APP_PASSWORD = os.getenv("APP_PASSWORD", "password")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
@@ -143,6 +149,28 @@ body, #app-root { background: var(--bg); }
 }
 .app-header .links a:hover { background: rgba(255,255,255,.14); transform: translateY(-1px); }
 
+/* login */
+.login-card {
+  max-width: 400px;
+  margin: 100px auto;
+  padding: 40px;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+.login-header {
+  align-items: center;
+  text-align: center;
+  margin-bottom: 30px;
+}
+.login-logo img {
+  height: 40px !important;
+  width: auto !important;
+  object-fit: contain;
+  margin: 0 auto 16px auto;
+  display: block;
+}
+    
 /* Mobile responsive header */
 @media (max-width: 768px) {
   .app-header { flex-direction:column; align-items:flex-start; padding:12px; }
@@ -271,46 +299,43 @@ async def chat_fn(message, history):
         partial += ch
         yield partial
 
-# ============== APP (A/B layout preserved) ==============
+# ============== APP ==============
 with gr.Blocks(title="Redis Memory Server Demo") as demo:
     st = gr.State({"hits": 0, "misses": 0, "saved_tokens": 0, "saved_usd": 0.0, "history": []})
 
     # Header with logo + links
-    gr.HTML("""
+    gr.HTML(f"""
       <div class="app-header">
         <div class="brand">
-          <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/e/ee/Redis_logo.svg/2560px-Redis_logo.svg.png" alt="Redis">
+          <img src="{LOGO_SRC}" alt="Redis">
           <div class="brand-content">
             <div class="title">Redis Memory Server Demo</div>
             <div class="meta">
               <div class="meta-item">
-                <span class="label">SemVer:</span>
-                <span class="value">v2.2.8-gabriella</span>
+                <span class="label">Version:</span>
+                <span class="value">{app_version}</span>
               </div>
               <div class="meta-item">
-                <span class="label">GitHub PR:</span>
-                <span class="value">gacerioni</span>
+                <span class="label">GitHub:</span>
+                <span class="value">mminichino</span>
               </div>
             </div>
           </div>
         </div>
         <div class="links">
-          <a href="https://www.linkedin.com/in/gabrielcerioni/" target="_blank" rel="noopener">💼 Gabs' LinkedIn</a>
+          <a href="https://www.linkedin.com/in/michael-minichino/" target="_blank" rel="noopener">💼 LinkedIn</a>
           <a href="https://redis.io/" target="_blank" rel="noopener">🔗 Redis</a>
-          <a href="https://github.com/Redislabs-Solution-Architects/redis-langcache-python-example" target="_blank" rel="noopener">⭐ GitHub Repo</a>
+          <a href="https://github.com/mminichino/redis-agent-memory-demo" target="_blank" rel="noopener">⭐ GitHub Repo</a>
         </div>
       </div>
     """)
 
-    # Title + Subtitle (clear and legible)
+    # Title + Subtitle
     gr.HTML("""
       <div class="hero">
-        <div class="hero-title">Semantic Cache by Company / Business Unit / Person</div>
+        <div class="hero-title">Redis Memory Server Demo</div>
         <p class="hero-sub">
-          This demo shows how LangCache stores neutral LLM responses and
-          reuses them by scope (company/BU/person).<br/>
-          You can clear the cache by scope directly in the interface.<br/>
-          Remember that the cache can be for EVERYONE, for a BU, or for a specific person!
+          This demo shows how Redis Agent Memory Server stores both short and long term memory.
         </p>
       </div>
     """)
@@ -319,14 +344,6 @@ with gr.Blocks(title="Redis Memory Server Demo") as demo:
     with gr.Group(elem_classes=["config-card"]):
         with gr.Accordion("How it works (details)", open=False):
             gr.Markdown("LONG_DESCRIPTION")
-
-    # KPIs
-    with gr.Row(elem_classes=["kpi-row"]):
-        kpi_hits = gr.HTML("<div class='kpi'><div class='kpi-num'>0</div><div class='kpi-label'>Hits</div></div>")
-        kpi_misses = gr.HTML("<div class='kpi'><div class='kpi-num'>0</div><div class='kpi-label'>Misses</div></div>")
-        kpi_rate = gr.HTML("<div class='kpi'><div class='kpi-num'>0.0%</div><div class='kpi-label'>Hit Rate</div></div>")
-        kpi_tokens = gr.HTML("<div class='kpi'><div class='kpi-num'>0</div><div class='kpi-label'>Tokens</div></div>")
-        kpi_savings = gr.HTML("<div class='kpi kpi-accent'><div class='kpi-num'>USD $0.0000</div><div class='kpi-label'>Savings</div></div>")
 
     # Scenarios A and B (side by side)
     with gr.Row(elem_classes=["scenarios"]):
@@ -346,8 +363,7 @@ with gr.Blocks(title="Redis Memory Server Demo") as demo:
 
 # ============== PASSWORD PROTECTION ==============
 def check_password(password):
-    """Check if the provided password matches the environment variable."""
-    if password == "password":
+    if password == APP_PASSWORD:
         return {
             login_box: gr.update(visible=False),
             main_app: gr.update(visible=True)
@@ -359,13 +375,12 @@ def check_password(password):
         }
 
 # Wrap the demo with password protection
-with gr.Blocks(title="Redis Memory Server Demo EN-US") as app:
+with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
     with gr.Column(visible=True, elem_id="login-container") as login_box:
-        gr.HTML("""
+        gr.HTML(f"""
             <div style="max-width: 400px; margin: 100px auto; padding: 40px; background: white; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
                 <div style="text-align: center; margin-bottom: 30px;">
-                    <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/e/ee/Redis_logo.svg/2560px-Redis_logo.svg.png"
-                         alt="Redis" style="height: 40px; margin-bottom: 16px;">
+                    <img src="{LOGO_SRC}" alt="Redis" style="height: 40px; margin-bottom: 16px;">
                     <h2 style="font-family: 'Space Grotesk', sans-serif; color: #0b1220; margin: 0;">Redis LangCache Demo</h2>
                     <p style="color: #64748b; margin-top: 8px;">Enter the password to access</p>
                 </div>
