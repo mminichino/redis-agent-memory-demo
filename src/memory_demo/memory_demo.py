@@ -1,20 +1,14 @@
 import json
 import os
-import re
-import time
 import asyncio
 import uuid
-from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
 import gradio as gr
 from dotenv import load_dotenv
 from pathlib import Path
-import openai
 from agent_memory_client import MemoryAPIClient, MemoryClientConfig
-from agent_memory_client.integrations.langchain import get_memory_tools
-from langchain.agents import create_agent
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from agent_memory_client.models import WorkingMemory
 from langchain_openai import ChatOpenAI
+from langchain_tavily import TavilySearch
 from memory_demo import __version__ as app_version
 import logging
 import base64
@@ -33,7 +27,7 @@ LOGO_SRC = f"data:image/png;base64,{LOGO_B64}"
 APP_PASSWORD = os.getenv("APP_PASSWORD", "password")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2-chat-latest")
 SESSION_ID = str(uuid.uuid4())
 
 SYSTEM_PROMPT = {
@@ -61,10 +55,14 @@ SYSTEM_PROMPT = {
     - Only offer suggestions, recommendations, or tips if the user explicitly asks for them
     - Store preferences and important details, but don't be overly eager about it
     - If someone shares a preference, respond like a friend would - acknowledge it, maybe ask a follow-up question, but don't launch into advice
+    - When using **lazily_create_long_term_memory**, ensure you provide the **text** parameter with the content you want to store and the **memory_type** (episodic or semantic).
 
     Be helpful, friendly, and responsive. Mirror their conversational style - if they're just chatting, chat back. If they ask for help, then help.
     """,
 }
+
+if "TAVILY_API_KEY" not in os.environ:
+    logger.warning("TAVILY_API_KEY not found in environment. Web search will fail.")
 
 web_search_function = {
     "name": "web_search",
@@ -98,11 +96,11 @@ logger.info(
     f"Available memory tools: {[tool['function']['name'] for tool in memory_tool_schemas]}"
 )
 
-llm = ChatOpenAI(model=OPENAI_MODEL, temperature=0.7).bind_tools(
+llm = ChatOpenAI(model=OPENAI_MODEL).bind_tools(
     available_functions
 )
 
-# ===================== CSS (VISUAL ONLY) =====================
+# ===================== CSS =====================
 CUSTOM_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Space+Grotesk:wght@400;600;700&display=swap');
 
@@ -290,8 +288,459 @@ button.primary:hover, .gr-button-primary:hover {
 .h1 { color: var(--ink) !important; background: transparent !important; }
 """
 
-async def chat_fn(message, history):
-    reply = f"Echo: {message}"
+def _get_namespace(user_id: str) -> str:
+    return f"demo_agent:{user_id}"
+
+async def _get_working_memory(session_id: str, user_id: str) -> WorkingMemory:
+    created, result = await memory_client.get_or_create_working_memory(
+        session_id=session_id,
+        namespace=_get_namespace(user_id),
+        model_name="gpt-5.2-chat-latest",
+    )
+    return WorkingMemory(**result.model_dump())
+
+async def _add_message_to_working_memory(session_id: str, user_id: str, role: str, content: str):
+    new_message = [{"role": role, "content": content}]
+    await memory_client.get_or_create_working_memory(
+        session_id=session_id,
+        namespace=_get_namespace(user_id),
+        model_name="gpt-5.2-chat-latest",
+    )
+    await memory_client.append_messages_to_working_memory(
+        session_id=session_id,
+        messages=new_message,
+        namespace=_get_namespace(user_id),
+    )
+
+async def _search_web(query: str) -> str:
+    try:
+        tool = TavilySearch(max_results=3)
+        response = tool.invoke(query)
+        if isinstance(response, str):
+            return response
+
+        if isinstance(response, dict):
+            results = response.get("results", [])
+        elif isinstance(response, list):
+            results = response
+        else:
+            results = []
+
+        formatted_results = []
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            title = result.get("title", "No title")
+            content = result.get("content", "No content")
+            url = result.get("url", "No URL")
+            formatted_results.append(f"**{title}**\n{content}\nSource: {url}")
+
+        if not formatted_results:
+            return "No relevant search results found."
+
+        return "\n\n".join(formatted_results)
+    except Exception as e:
+        logger.error(f"Error performing web search: {e}")
+        return f"Error performing web search: {str(e)}"
+
+async def _handle_web_search_call(function_call: dict, context_messages: list) -> str:
+    logger.info("Searching the web")
+    try:
+        function_args = json.loads(function_call["arguments"])
+        query = function_args.get("query", "")
+        search_results = await _search_web(query)
+
+        follow_up_messages = context_messages + [
+            {
+                "role": "assistant",
+                "content": f"I'll search for that information: {query}",
+            },
+            {
+                "role": "function",
+                "name": "web_search",
+                "content": search_results,
+            },
+            {
+                "role": "user",
+                "content": "Please provide a helpful response based on the search results.",
+            },
+        ]
+
+        final_response = llm.invoke(follow_up_messages)
+        response_content = str(final_response.content)
+
+        if not response_content or not response_content.strip():
+            if (getattr(final_response, "tool_calls", None) or
+                (hasattr(final_response, "additional_kwargs") and "tool_calls" in final_response.additional_kwargs)):
+                logger.info("Web search result led to more tool calls, but handling in simple handler is limited.")
+            
+            logger.error("Empty response from LLM in web search call handler")
+            return "I apologize, but I couldn't generate a response after the web search."
+
+        return response_content
+
+    except (json.JSONDecodeError, TypeError):
+        logger.error(f"Invalid web search arguments: {function_call}")
+        return "I'm sorry, I encountered an error processing your web search request. Please try again."
+
+async def _handle_memory_tool_call(
+        function_call: dict,
+        context_messages: list,
+        session_id: str,
+        user_id: str,
+) -> str:
+    function_name = function_call["name"]
+
+    print("Accessing memory...")
+    result = await memory_client.resolve_tool_call(
+        tool_call=function_call,
+        session_id=session_id,
+        namespace=_get_namespace(user_id),
+    )
+
+    if not result["success"]:
+        logger.error(f"Function call failed: {result['error']}")
+        return result["formatted_response"]
+
+    follow_up_messages = context_messages + [
+        {
+            "role": "assistant",
+            "content": f"Let me {function_name.replace('_', ' ')}...",
+        },
+        {
+            "role": "function",
+            "name": function_name,
+            "content": result["formatted_response"],
+        },
+        {
+            "role": "user",
+            "content": "Please provide a helpful response based on this information.",
+        },
+    ]
+
+    final_response = llm.invoke(follow_up_messages)
+    response_content = str(final_response.content)
+
+    if not response_content or not response_content.strip():
+        if (getattr(final_response, "tool_calls", None) or
+            (hasattr(final_response, "additional_kwargs") and "tool_calls" in final_response.additional_kwargs)):
+             logger.info(f"Memory tool call {function_name} led to more tool calls.")
+
+        logger.error(
+            f"Empty response from LLM in memory tool call handler. Function: {function_name}"
+        )
+        logger.error(f"Response object: {final_response}")
+        logger.error(f"Response content: '{final_response.content}'")
+        logger.error(
+            f"Response additional_kwargs: {getattr(final_response, 'additional_kwargs', {})}"
+        )
+        return "I apologize, but I couldn't generate a proper response to your request."
+
+    return response_content
+
+async def _handle_function_call(
+        function_call: dict,
+        context_messages: list,
+        session_id: str,
+        user_id: str,
+) -> str:
+    function_name = function_call["name"]
+
+    if function_name == "web_search":
+        return await _handle_web_search_call(function_call, context_messages)
+
+    return await _handle_memory_tool_call(
+        function_call, context_messages, session_id, user_id
+    )
+
+async def _generate_response(
+        session_id: str,
+        user_id: str,
+) -> str:
+    working_memory = await _get_working_memory(session_id, user_id)
+    context_messages = working_memory.messages
+
+    context_messages_dicts = []
+    for msg in context_messages:
+        if hasattr(msg, "role") and hasattr(msg, "content"):
+            msg_dict = {"role": msg.role, "content": msg.content}
+            context_messages_dicts.append(msg_dict)
+        else:
+            context_messages_dicts.append(msg)
+
+    context_messages = [
+        msg for msg in context_messages_dicts if msg.get("role") != "system"
+    ]
+    context_messages.insert(0, SYSTEM_PROMPT)
+
+    try:
+        logger.info(f"Context messages: {context_messages}")
+        response = llm.invoke(context_messages)
+
+        tool_calls = getattr(response, "tool_calls", [])
+        if not tool_calls and hasattr(response, "additional_kwargs"):
+            tool_calls = response.additional_kwargs.get("tool_calls", [])
+
+        if tool_calls and len(tool_calls) > 0:
+            normalized_calls: list[dict] = []
+            for idx, tc in enumerate(tool_calls):
+                if isinstance(tc, dict):
+                    if tc.get("type") == "function" and "function" in tc:
+                        normalized_calls.append(tc)
+                    else:
+                        name = tc.get("function", {}).get("name", tc.get("name", ""))
+                        args_value = tc.get("function", {}).get(
+                            "arguments", tc.get("arguments", {})
+                        )
+                        if not isinstance(args_value, str):
+                            try:
+                                args_value = json.dumps(args_value)
+                            except Exception as e:
+                                logger.error(f"Error serializing args: {e}")
+                                args_value = "{}"
+                        normalized_calls.append(
+                            {
+                                "id": tc.get("id", f"tool_call_{idx}"),
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": args_value,
+                                },
+                            }
+                        )
+                else:
+                    name = getattr(tc, "name", "")
+                    args = getattr(tc, "args", {})
+                    if not isinstance(args, str):
+                        try:
+                            args = json.dumps(args)
+                        except Exception as e:
+                            logger.error(f"Error serializing tool call args: {e}")
+                            args = "{}"
+                    normalized_calls.append(
+                        {
+                            "id": getattr(tc, "id", f"tool_call_{idx}"),
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": args,
+                            },
+                        }
+                    )
+
+            results = []
+            for call in normalized_calls:
+                fname = call.get("function", {}).get("name", "")
+                try:
+                    if fname == "web_search":
+                        args = json.loads(call.get("function", {}).get("arguments", "{}"))
+                        res_content = await _search_web(args.get("query", ""))
+                        res = {"success": True, "result": res_content, "formatted_response": res_content}
+                    else:
+                        res = await memory_client.resolve_tool_call(
+                            tool_call={
+                                "name": fname,
+                                "arguments": call.get("function", {}).get(
+                                    "arguments", "{}"
+                                ),
+                            },
+                            session_id=session_id,
+                            namespace=_get_namespace(user_id),
+                            user_id=user_id,
+                        )
+                except Exception as e:
+                    logger.error(f"Tool '{fname}' failed: {e}")
+                    res = {"success": False, "error": str(e)}
+                results.append((call, res))
+
+            assistant_tools_msg = {
+                "role": "assistant",
+                "content": response.content or "",
+                "tool_calls": normalized_calls,
+            }
+
+            tool_messages: list[dict] = []
+            for i, (tc, res) in enumerate(results):
+                if not res.get("success", False):
+                    content = f"Error calling tool '{tc.get('function', {}).get('name', '')}': {res.get('error')}"
+                else:
+                    payload = res.get("result")
+                    try:
+                        content = (
+                            json.dumps(payload)
+                            if isinstance(payload, (dict, list))
+                            else str(res.get("formatted_response", ""))
+                        )
+                    except Exception as e:
+                        logger.error(f"Error serializing payload: {e}")
+                        content = str(res.get("formatted_response", ""))
+                tool_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", f"tool_call_{i}"),
+                        "name": tc.get("function", {}).get("name", ""),
+                        "content": content,
+                    }
+                )
+
+            messages = (
+                    context_messages + [assistant_tools_msg] + tool_messages
+            )
+            followup = llm.invoke(messages)
+            rounds = 0
+            max_rounds = 1
+            while (
+                    rounds < max_rounds
+                    and (getattr(followup, "tool_calls", None) or
+                         (hasattr(followup, "additional_kwargs") and "tool_calls" in followup.additional_kwargs))
+            ):
+                rounds += 1
+                follow_calls = getattr(followup, "tool_calls", [])
+                if not follow_calls and hasattr(followup, "additional_kwargs"):
+                    follow_calls = followup.additional_kwargs.get("tool_calls", [])
+
+                follow_results = []
+                for _j, fcall in enumerate(follow_calls):
+                    if isinstance(fcall, dict):
+                        fname = fcall.get("function", {}).get("name", fcall.get("name", ""))
+                        fargs = fcall.get("function", {}).get("arguments", fcall.get("arguments", fcall.get("args", {})))
+                        fid = fcall.get("id", f"tool_call_follow_{_j}")
+                    else:
+                        fname = getattr(fcall, "name", "")
+                        fargs = getattr(fcall, "args", {})
+                        fid = getattr(fcall, "id", f"tool_call_follow_{_j}")
+
+                    try:
+                        if fname == "web_search":
+                            if isinstance(fargs, str):
+                                try:
+                                    fargs = json.loads(fargs)
+                                except json.JSONDecodeError:
+                                    fargs = {}
+                            res_content = await _search_web(fargs.get("query", ""))
+                            fres = {"success": True, "result": res_content, "formatted_response": res_content}
+                        else:
+                            fres = await memory_client.resolve_tool_call(
+                                tool_call={"name": fname, "arguments": json.dumps(fargs) if not isinstance(fargs, str) else fargs},
+                                session_id=session_id,
+                                namespace=_get_namespace(user_id),
+                                user_id=user_id,
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"Follow-up tool '{fname}' failed: {e}"
+                        )
+                        fres = {"success": False, "error": str(e)}
+                    follow_results.append((fcall, fres, fid, fname, fargs))
+
+                norm_follow = []
+                for idx2, (fc, fr, fid, fname, fargs) in enumerate(follow_results):
+                    if not isinstance(fargs, str):
+                        try:
+                            fargs_str = json.dumps(fargs)
+                        except Exception as e:
+                            logger.error(f"Error serializing args: {e}")
+                            fargs_str = "{}"
+                    else:
+                        fargs_str = fargs
+
+                    norm_follow.append(
+                        {
+                            "id": fid,
+                            "type": "function",
+                            "function": {
+                                "name": fname,
+                                "arguments": fargs_str,
+                            },
+                        }
+                    )
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": followup.content or "",
+                        "tool_calls": norm_follow,
+                    }
+                )
+                for k, (fc, fr, fid, fname, fargs) in enumerate(follow_results):
+                    if not fr.get("success", False):
+                        content = f"Error calling follow-up tool '{fname}': {fr.get('error')}"
+                    else:
+                        payload = fr.get("result")
+                        try:
+                            content = (
+                                json.dumps(payload)
+                                if isinstance(payload, (dict, list))
+                                else str(fr.get("formatted_response", ""))
+                            )
+                        except Exception as e:
+                            logger.error(f"Error serializing payload: {e}")
+                            content = str(fr.get("formatted_response", ""))
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": fid,
+                            "name": fname,
+                            "content": content,
+                        }
+                    )
+                followup = llm.invoke(messages)
+
+            return str(followup.content)
+
+        if hasattr(response, "additional_kwargs") and "function_call" in response.additional_kwargs:
+            return await _handle_function_call(
+                response.additional_kwargs["function_call"],
+                context_messages,
+                session_id,
+                user_id,
+            )
+
+        response_content = str(response.content)
+
+        if not response_content or not response_content.strip():
+            logger.error("Empty response from LLM in main response generation")
+            logger.error(f"Response object: {response}")
+            logger.error(f"Response content: '{response.content}'")
+            logger.error(
+                f"Response additional_kwargs: {getattr(response, 'additional_kwargs', {})}"
+            )
+            return "I apologize, but I couldn't generate a proper response to your request."
+
+        return response_content
+    except Exception as e:
+        logger.error(f"Error generating response: {e}")
+        return "I'm sorry, I encountered an error processing your request."
+
+async def process_user_input(
+        user_input: str,
+        session_id: str,
+        user_id: str,
+) -> str:
+    try:
+        await _add_message_to_working_memory(
+            session_id, user_id, "user", user_input
+        )
+
+        response = await _generate_response(
+            session_id, user_id
+        )
+
+        if not response or not response.strip():
+            logger.error("Generated response is empty, using fallback message")
+            response = "I'm sorry, I encountered an error generating a response to your request."
+
+        await _add_message_to_working_memory(
+            session_id, user_id, "assistant", response
+        )
+        return response
+
+    except Exception as e:
+        logger.exception(f"Error processing user input: {e}")
+        return "I'm sorry, I encountered an error processing your request."
+
+async def chat_fn(message, _):
+    reply = await process_user_input(message, SESSION_ID, "demo")
     partial = ""
 
     for ch in reply:

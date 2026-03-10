@@ -10,7 +10,9 @@ dependencies = [
     "agent-memory-client>=0.14.0",
     "langchain>=1.2.10",
     "langchain_core>=1.2.17",
-    "langchain_openai>=1.1.10"
+    "langchain_openai>=1.1.10",
+    "langchain-tavily>=0.2.17",
+    "tavily-python>=0.7.23"
 ]
 
 [project.urls]
