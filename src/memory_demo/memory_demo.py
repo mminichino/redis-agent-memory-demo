@@ -10,7 +10,6 @@ from agent_memory_client.models import WorkingMemory, ClientMemoryRecord, Memory
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from memory_demo import __version__ as app_version
-from functools import partial
 import logging
 import base64
 
@@ -29,10 +28,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD", "password")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2-chat-latest")
-CHAT_A_URL = os.getenv("CHAT_A_URL", "http://localhost:8000")
-CHAT_B_URL = os.getenv("CHAT_B_URL", "http://localhost:8000")
-SESSION_ID = str(uuid.uuid4())
-USER_ID = "demo"
+AGENT_MEMORY_SERVER_URL = os.getenv("AGENT_MEMORY_SERVER_URL", "http://localhost:8000")
 
 SYSTEM_PROMPT = {
     "role": "system",
@@ -88,14 +84,10 @@ web_search_function = {
 
 available_functions = [web_search_function]
 
-memory_client_config_a = MemoryClientConfig(
-    base_url=CHAT_A_URL
+memory_client_config = MemoryClientConfig(
+    base_url=AGENT_MEMORY_SERVER_URL
 )
-memory_client_config_b = MemoryClientConfig(
-    base_url=CHAT_B_URL
-)
-memory_client_a = MemoryAPIClient(memory_client_config_a)
-memory_client_b = MemoryAPIClient(memory_client_config_b)
+memory_client = MemoryAPIClient(memory_client_config)
 memory_tool_schemas = MemoryAPIClient.get_all_memory_tool_schemas()
 for tool_schema in memory_tool_schemas:
     available_functions.append(tool_schema["function"])
@@ -110,190 +102,191 @@ llm = ChatOpenAI(model=OPENAI_MODEL).bind_tools(
 
 # ===================== CSS =====================
 CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Space+Grotesk:wght@400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
 
 :root {
-  --redis-red:#D82C20; --ink:#0b1220; --soft:#475569; --muted:#64748b;
-  --line:#e5e7eb; --bg:#f6f7f9; --white:#ffffff; --radius:14px;
-  --success:#10b981; --warning:#f59e0b;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --radius: 0.625rem;
+
+  /* Redis Specific Branding */
+  --redis-red: #D82C20;
 }
 
-* { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif; }
-body, #app-root { background: var(--bg); }
+* { font-family: Inter, system-ui, -apple-system, sans-serif; border-color: var(--border); }
+
+body, #app-root { 
+  background: var(--background); 
+  color: var(--foreground);
+}
 
 /* HEADER */
 .app-header {
   position: sticky; top: 0; z-index: 50;
-  display:flex; align-items:center; justify-content:space-between; gap:12px;
-  padding:14px 16px; background: var(--redis-red); color:#fff;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 16px; background: var(--redis-red); color: #fff;
   box-shadow: 0 2px 8px rgba(0,0,0,.18);
 }
-.app-header .brand { display:flex; align-items:center; gap:14px; flex:1; }
-.app-header .brand img { height:24px; display:block; }
-.app-header .brand-content { display:flex; flex-direction:column; gap:4px; flex:1; }
+.app-header .brand { display: flex; align-items: center; gap: 14px; flex: 1; }
+.app-header .brand img { height: 24px; display: block; }
+.app-header .brand-content { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .app-header .title {
   font-family: 'Space Grotesk', Inter, sans-serif;
-  font-size:20px; font-weight:700; letter-spacing:.3px;
-  line-height:1.2;
+  font-size: 20px; font-weight: 700; letter-spacing: .3px;
+  line-height: 1.2;
 }
 .app-header .meta {
-  display:flex; align-items:center; gap:12px; flex-wrap:wrap;
-  font-size:12px; opacity:0.95; font-weight:500;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  font-size: 12px; opacity: 0.95; font-weight: 500;
 }
 .app-header .meta-item {
-  display:inline-flex; align-items:center; gap:6px;
-  padding:3px 8px; background:rgba(255,255,255,0.15);
-  border-radius:6px; white-space:nowrap;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; background: rgba(255,255,255,0.15);
+  border-radius: 6px; white-space: nowrap;
 }
-.app-header .meta-item .label { opacity:0.8; }
-.app-header .meta-item .value { font-weight:600; }
-.app-header .links { display:flex; gap:8px; }
+.app-header .meta-item .label { opacity: 0.8; }
+.app-header .meta-item .value { font-weight: 600; }
+.app-header .links { display: flex; gap: 8px; }
 .app-header .links a {
-  display:inline-flex; align-items:center; gap:8px; color:#fff; text-decoration:none;
-  border:1px solid rgba(255,255,255,.35); padding:7px 12px; border-radius:999px; font-weight:600; font-size:12px;
+  display: inline-flex; align-items: center; gap: 8px; color: #fff; text-decoration: none;
+  border: 1px solid rgba(255,255,255,.35); padding: 7px 12px; border-radius: 999px; font-weight: 600; font-size: 12px;
   transition: background .15s ease, transform .15s ease;
 }
 .app-header .links a:hover { background: rgba(255,255,255,.14); transform: translateY(-1px); }
 
-/* login */
-.login-card {
-  max-width: 400px;
-  margin: 100px auto;
-  padding: 40px;
-  background: white;
-  border-radius: 16px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-}
-.login-header {
-  align-items: center;
-  text-align: center;
-  margin-bottom: 30px;
-}
-.login-logo img {
-  height: 40px !important;
-  width: auto !important;
-  object-fit: contain;
-  margin: 0 auto 16px auto;
-  display: block;
-}
-    
 /* Mobile responsive header */
 @media (max-width: 768px) {
-  .app-header { flex-direction:column; align-items:flex-start; padding:12px; }
-  .app-header .brand { flex-direction:column; align-items:flex-start; gap:10px; }
-  .app-header .brand img { height:20px; }
-  .app-header .title { font-size:16px; }
-  .app-header .meta { gap:8px; }
-  .app-header .meta-item { font-size:11px; padding:2px 6px; }
-  .app-header .links { width:100%; justify-content:flex-start; }
+  .app-header { flex-direction: column; align-items: flex-start; padding: 12px; }
+  .app-header .brand { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .app-header .brand img { height: 20px; }
+  .app-header .title { font-size: 16px; }
+  .app-header .meta { gap: 8px; }
+  .app-header .meta-item { font-size: 11px; padding: 2px 6px; }
+  .app-header .links { width: 100%; justify-content: flex-start; }
 }
 
-/* HEADINGS */
-.h1 {
-  font-family: 'Space Grotesk', Inter, sans-serif;
-  font-size:26px; font-weight:700; color:var(--ink); margin:16px 16px 6px;
-}
-.h2 {
-  font-family: 'Space Grotesk', Inter, sans-serif;
-  font-size:16px; font-weight:600; color:var(--soft); margin:0 16px 14px;
-}
-
-/* Config box (clean) */
+/* Config box */
 .config-card {
-  margin: 10px 16px 14px; padding:12px;
-  background: var(--white);
-  border:1px solid var(--line); border-radius: var(--radius);
+  margin: 10px 16px 14px; padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--card-foreground);
 }
 
-/* KPIs */
-.kpi-row { display:flex; gap:12px; margin: 0 16px 16px; flex-wrap: wrap; }
-.kpi {
-  flex:1; min-width: 140px; background: var(--white); border:1px solid var(--line); border-radius:12px;
-  padding:14px 16px; transition: transform .2s ease, box-shadow .2s ease;
-}
-.kpi:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,.08); }
-.kpi .kpi-num {
-  font-family: 'Space Grotesk', Inter, sans-serif;
-  font-size:24px; font-weight:700; color:var(--ink); line-height:1.1;
-}
-.kpi .kpi-label {
-  font-size:11px; color:var(--muted); margin-top:6px;
-  text-transform:uppercase; letter-spacing:.8px; font-weight:600;
-}
-.kpi-accent { border-color: var(--redis-red); border-width: 2px; }
-.kpi-accent .kpi-num { color: var(--redis-red); }
-
-/* Scenarios side by side */
-.scenarios { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 10px 16px; }
-@media (max-width: 1024px) { .scenarios { grid-template-columns: 1fr; } }
+.chat-window { display: flex; justify-content: center; margin: 10px 16px; }
+.chat-window > * { width: 100%; max-width: 1200px; }
 
 .card {
-  background: var(--white); border:2px solid var(--line); border-radius: var(--radius);
-  padding:16px; transition: border-color .2s ease;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; transition: border-color .2s ease;
+  color: var(--card-foreground);
 }
 .card:hover { border-color: var(--redis-red); }
 .card .card-title {
   font-family: 'Space Grotesk', Inter, sans-serif;
-  font-size:18px; font-weight:700; color:var(--ink); margin-bottom:12px;
+  font-size: 18px; font-weight: 700; color: var(--foreground); margin-bottom: 12px;
   display: flex; align-items: center; gap: 8px;
 }
 
-/* Source badges */
-.source-badge {
-  display: inline-block; padding: 4px 10px; border-radius: 6px;
-  font-size: 11px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: .5px;
-}
-.source-cache { background: #d1fae5; color: #065f46; }
-.source-llm { background: #fef3c7; color: #92400e; }
-
-/* History */
-.dataframe { background: var(--white); border:1px solid var(--line); border-radius: var(--radius); }
-.dataframe thead tr th { font-size:12px; font-weight:600; }
-.dataframe tbody tr td { font-size:12px; }
-
 /* Buttons */
 button.primary, .gr-button-primary {
-  background: var(--redis-red) !important; border-color: var(--redis-red) !important; color:#fff !important;
+  background: var(--redis-red) !important; border-color: var(--redis-red) !important; color: #fff !important;
   font-weight: 600 !important; transition: all .2s ease !important;
+  border-radius: var(--radius) !important;
 }
 button.primary:hover, .gr-button-primary:hover {
   background: #c02518 !important; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(216,44,32,.3) !important;
 }
 
-/* Secondary buttons */
-.secondary-btn {
-  background: var(--white) !important; border: 1px solid var(--line) !important;
-  color: var(--soft) !important; font-weight: 600 !important;
-}
-
-/* --- HERO (title + subtitle) --- */
 .hero {
-  background: #ffffff;
-  border: 1px solid var(--line);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   margin: 16px;
   padding: 16px 18px;
+  color: var(--card-foreground);
 }
 
 .hero-title {
   font-family: 'Space Grotesk', Inter, sans-serif;
   font-size: 26px;
   font-weight: 700;
-  color: var(--ink);      /* force high contrast */
+  color: var(--foreground);
   letter-spacing: .2px;
   margin: 0 0 8px 0;
 }
 
 .hero-sub {
   font-size: 14px;
-  color: var(--soft);
+  color: var(--muted-foreground);
   line-height: 1.6;
   margin: 0;
 }
 
-/* If in some theme the title is "black on black", ensures contrast: */
-.h1 { color: var(--ink) !important; background: transparent !important; }
+/* Chat interface buttons */
+.chat-window button.secondary-small {
+  padding: 4px 8px !important;
+  font-size: 12px !important;
+  height: auto !important;
+  min-width: unset !important;
+  border: none !important;
+  background: transparent !important;
+  color: var(--muted-foreground) !important;
+  box-shadow: none !important;
+}
+
+.chat-window button.secondary-small:hover {
+  color: var(--foreground) !important;
+  background: var(--secondary) !important;
+}
+
+.chat-window .message-row button {
+  padding: 2px 6px !important;
+  font-size: 11px !important;
+  height: auto !important;
+  min-width: unset !important;
+  border: none !important;
+  background: transparent !important;
+  color: var(--muted-foreground) !important;
+  box-shadow: none !important;
+}
+
+.chat-window .message-row button:hover {
+  color: var(--foreground) !important;
+  background: var(--secondary) !important;
+}
+
+.chat-window .message-row button svg {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+.chat-window button.secondary-small svg {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.chat-window .message-row button svg,
+.chat-window button.secondary-small svg {
+  stroke-width: 1.5px !important;
+}
 """
 
 async def _extract_preferences(messages: list) -> list[str]:
@@ -318,19 +311,10 @@ async def _extract_preferences(messages: list) -> list[str]:
         logger.error(f"Error extracting preferences: {e}")
     return []
 
-async def _get_memory_client(scenario: str) -> MemoryAPIClient:
-    if scenario == "A":
-        return memory_client_a
-    elif scenario == "B":
-        return memory_client_b
-    else:
-        raise ValueError(f"Unknown scenario: {scenario}")
-
 async def _get_namespace(user_id: str) -> str:
     return f"demo_agent:{user_id}"
 
-async def _get_working_memory(session_id: str, user_id: str, scenario: str) -> WorkingMemory:
-    memory_client = await _get_memory_client(scenario)
+async def _get_working_memory(session_id: str, user_id: str) -> WorkingMemory:
     created, result = await memory_client.get_or_create_working_memory(
         session_id=session_id,
         namespace=await _get_namespace(user_id),
@@ -338,8 +322,7 @@ async def _get_working_memory(session_id: str, user_id: str, scenario: str) -> W
     )
     return WorkingMemory(**result.model_dump())
 
-async def _add_message_to_working_memory(session_id: str, user_id: str, role: str, content: str, scenario: str):
-    memory_client = await _get_memory_client(scenario)
+async def _add_message_to_working_memory(session_id: str, user_id: str, role: str, content: str):
     new_message = [{"role": role, "content": content}]
     await memory_client.get_or_create_working_memory(
         session_id=session_id,
@@ -428,9 +411,7 @@ async def _handle_memory_tool_call(
         context_messages: list,
         session_id: str,
         user_id: str,
-        scenario: str,
 ) -> str:
-    memory_client = await _get_memory_client(scenario)
     function_name = function_call["name"]
 
     print("Accessing memory...")
@@ -485,7 +466,6 @@ async def _handle_function_call(
         context_messages: list,
         session_id: str,
         user_id: str,
-        scenario: str,
 ) -> str:
     function_name = function_call["name"]
 
@@ -493,16 +473,14 @@ async def _handle_function_call(
         return await _handle_web_search_call(function_call, context_messages)
 
     return await _handle_memory_tool_call(
-        function_call, context_messages, session_id, user_id, scenario
+        function_call, context_messages, session_id, user_id
     )
 
 async def _generate_response(
         session_id: str,
         user_id: str,
-        scenario: str,
 ) -> str:
-    memory_client = await _get_memory_client(scenario)
-    working_memory = await _get_working_memory(session_id, user_id, scenario)
+    working_memory = await _get_working_memory(session_id, user_id)
     context_messages = working_memory.messages
 
     context_messages_dicts = []
@@ -739,7 +717,6 @@ async def _generate_response(
                 context_messages,
                 session_id,
                 user_id,
-                scenario,
             )
 
         response_content = str(response.content)
@@ -762,16 +739,14 @@ async def process_user_input(
         user_input: str,
         session_id: str,
         user_id: str,
-        scenario: str,
 ) -> str:
-    memory_client = await _get_memory_client(scenario)
     try:
         await _add_message_to_working_memory(
-            session_id, user_id, "user", user_input, scenario
+            session_id, user_id, "user", user_input
         )
 
         response = await _generate_response(
-            session_id, user_id, scenario
+            session_id, user_id
         )
 
         if not response or not response.strip():
@@ -779,11 +754,11 @@ async def process_user_input(
             response = "I'm sorry, I encountered an error generating a response to your request."
 
         await _add_message_to_working_memory(
-            session_id, user_id, "assistant", response, scenario
+            session_id, user_id, "assistant", response
         )
 
         try:
-            working_memory = await _get_working_memory(session_id, user_id, scenario)
+            working_memory = await _get_working_memory(session_id, user_id)
             preferences = await _extract_preferences(
                 [{"role": msg.role, "content": msg.content} for msg in working_memory.messages]
             )
@@ -809,19 +784,27 @@ async def process_user_input(
         logger.exception(f"Error processing user input: {e}")
         return "I'm sorry, I encountered an error processing your request."
 
-async def chat_fn(message, _, scenario):
-    logger.info(f"Received message from chat: {scenario}")
-    reply = await process_user_input(message, SESSION_ID, USER_ID, scenario)
+async def chat_fn(message, _, state):
+    user_id = state.get("username", "guest")
+    session_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, user_id))
+    reply = await process_user_input(message, session_id, user_id)
     builder = ""
 
     for ch in reply:
         builder += ch
         yield builder
 
-# ============== APP ==============
-with gr.Blocks(title="Redis Memory Server Demo") as demo:
-    st = gr.State({"hits": 0, "misses": 0, "saved_tokens": 0, "saved_usd": 0.0, "history": []})
+def session_md(state):
+    username = state.get("username", "Guest")
+    ams_url = state.get("ams_url", "Not set")
 
+    return f"""
+- **Username:** {username}
+- **Agent Memory Server URL:** {ams_url}
+"""
+
+# ============== Demo ==============
+def render_demo():
     # Header with logo + links
     gr.HTML(f"""
       <div class="app-header">
@@ -833,10 +816,6 @@ with gr.Blocks(title="Redis Memory Server Demo") as demo:
               <div class="meta-item">
                 <span class="label">Version:</span>
                 <span class="value">{app_version}</span>
-              </div>
-              <div class="meta-item">
-                <span class="label">GitHub:</span>
-                <span class="value">mminichino</span>
               </div>
             </div>
           </div>
@@ -861,26 +840,18 @@ with gr.Blocks(title="Redis Memory Server Demo") as demo:
 
     # Settings
     with gr.Group(elem_classes=["config-card"]):
-        with gr.Accordion("How it works (details)", open=False):
-            gr.Markdown("LONG_DESCRIPTION")
+        with gr.Accordion("Session:", open=True):
+            session_box_md = gr.Markdown(session_md({}))
 
-    # Scenarios A and B (side by side)
-    with gr.Row(elem_classes=["scenarios"]):
-        # --- Scenario A ---
-        chat_a = partial(chat_fn, scenario="A")
+    with gr.Row(elem_classes=["chat-window"]):
         with gr.Column(elem_classes=["card"]):
-            gr.Markdown("<div class='card-title'>Chat 🅰️</div>")
+            gr.Markdown("<div class='card-title'>Chat with Assistant</div>")
             gr.ChatInterface(
-                fn=chat_a
+                fn=chat_fn,
+                additional_inputs=[st]
             )
 
-        # --- Scenario B ---
-        chat_b = partial(chat_fn, scenario="B")
-        with gr.Column(elem_classes=["card"]):
-            gr.Markdown("<div class='card-title'>Chat 🅱️</div>")
-            gr.ChatInterface(
-                fn=chat_b
-            )
+    return session_box_md
 
 # ============== PASSWORD PROTECTION ==============
 def check_password(password):
@@ -897,6 +868,8 @@ def check_password(password):
 
 # Wrap the demo with password protection
 with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
+    st = gr.State({"username": "", "ams_url": "", "history": []})
+
     with gr.Column(visible=True, elem_id="login-container") as login_box:
         gr.HTML(f"""
             <div style="max-width: 400px; margin: 100px auto; padding: 40px; background: white; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
@@ -910,6 +883,12 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
         with gr.Row():
             gr.HTML("<div style='flex: 1;'></div>")
             with gr.Column(scale=1, min_width=300):
+                username_input = gr.Textbox(
+                    label="🏷️ Username",
+                    type="text",
+                    placeholder="Enter your username",
+                    elem_id="username-input",
+                )
                 password_input = gr.Textbox(
                     label="🔒 Password",
                     type="password",
@@ -921,33 +900,41 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
             gr.HTML("<div style='flex: 1;'></div>")
 
     with gr.Column(visible=False) as main_app:
-        demo.render()
+        session_box = render_demo()
 
     # Handle login
-    def handle_login(password):
+    def handle_login(username, password, state):
         if password == APP_PASSWORD:
-            return {
-                login_box: gr.update(visible=False),
-                main_app: gr.update(visible=True),
-                login_status: ""
-            }
+            state["username"] = username
+            state["ams_url"] = AGENT_MEMORY_SERVER_URL
+            return (
+                gr.update(visible=False),
+                gr.update(visible=True),
+                "",
+                state,
+                session_md(state),
+            )
         else:
-            return {
-                login_box: gr.update(visible=True),
-                main_app: gr.update(visible=False),
-                login_status: "<p style='color: #ef4444; text-align: center; margin-top: 10px;'>❌ Incorrect password</p>"
-            }
+            return (
+                gr.update(visible=True),
+                gr.update(visible=False),
+                "<p style='color: #ef4444; text-align: center; margin-top: 10px;'>❌ Incorrect password</p>",
+                state,
+                gr.update(),
+            )
 
     login_btn.click(
         fn=handle_login,
-        inputs=[password_input],
-        outputs=[login_box, main_app, login_status]
+        inputs=[username_input, password_input, st],
+        outputs=[login_box, main_app, login_status, st, session_box],
+        show_progress="hidden",
     )
 
     password_input.submit(
         fn=handle_login,
-        inputs=[password_input],
-        outputs=[login_box, main_app, login_status]
+        inputs=[username_input, password_input, st],
+        outputs=[login_box, main_app, login_status, st, session_box],
+        show_progress="hidden",
     )
 
 def main():
