@@ -1,3 +1,4 @@
+from __future__ import annotations
 import json
 import os
 import uuid
@@ -12,6 +13,8 @@ from langchain_tavily import TavilySearch
 from memory_demo import __version__ as app_version
 import logging
 import base64
+import secrets
+import string
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
@@ -24,7 +27,12 @@ load_dotenv()
 LOGO_PATH = Path(__file__).parent / "public" / "logo.png"
 LOGO_B64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("utf-8")
 LOGO_SRC = f"data:image/png;base64,{LOGO_B64}"
-APP_PASSWORD = os.getenv("APP_PASSWORD", "password")
+if "APP_PASSWORD" in os.environ:
+    APP_PASSWORD = os.getenv("APP_PASSWORD")
+else:
+    characters = string.ascii_letters + string.digits
+    APP_PASSWORD = ''.join(secrets.choice(characters) for _ in range(16))
+    logger.info(f"APP_PASSWORD: {APP_PASSWORD}")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2-chat-latest")
@@ -102,6 +110,9 @@ llm = ChatOpenAI(model=OPENAI_MODEL).bind_tools(
 
 # ===================== CSS =====================
 CUSTOM_CSS = """
+#login-container {
+    align-items: center;
+}
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
 
 :root {
@@ -784,7 +795,30 @@ async def process_user_input(
         logger.exception(f"Error processing user input: {e}")
         return "I'm sorry, I encountered an error processing your request."
 
-async def chat_fn(message, _, state):
+def _get_client_ip(request: gr.Request | None) -> str:
+    if request is None:
+        return "unknown"
+
+    x_forwarded_for = request.headers.get("x-forwarded-for")
+    if x_forwarded_for:
+        return x_forwarded_for.split(",")[0].strip()
+
+    x_real_ip = request.headers.get("x-real-ip")
+    if x_real_ip:
+        return x_real_ip.strip()
+
+    if request.client:
+        return request.client.host
+
+    return "unknown"
+
+async def chat_fn(message, _, state, request: gr.Request):
+    if not state.get("authenticated", False):
+        client_ip = _get_client_ip(request)
+        logger.warning(f"Unauthorized access attempt from IP: {client_ip}")
+        yield "Unauthorized. Please log in first."
+        return
+
     user_id = state.get("username", "guest")
     session_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, user_id))
     reply = await process_user_input(message, session_id, user_id)
@@ -850,8 +884,14 @@ def render_demo():
                 fn=chat_fn,
                 additional_inputs=[st]
             )
+    
+    with gr.Row():
+        gr.HTML("<div style='flex: 1;'></div>")
+        with gr.Column(scale=0, min_width=100):
+            logout_button = gr.Button("Logout", variant="secondary", size="sm")
+        gr.HTML("<div style='flex: 1;'></div>")
 
-    return session_box_md
+    return session_box_md, logout_button
 
 # ============== PASSWORD PROTECTION ==============
 def check_password(password):
@@ -868,15 +908,15 @@ def check_password(password):
 
 # Wrap the demo with password protection
 with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
-    st = gr.State({"username": "", "ams_url": "", "history": []})
+    st = gr.State({"username": "", "ams_url": "", "history": [], "authenticated": False})
 
     with gr.Column(visible=True, elem_id="login-container") as login_box:
         gr.HTML(f"""
             <div style="max-width: 400px; margin: 100px auto; padding: 40px; background: white; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
                 <div style="text-align: center; margin-bottom: 30px;">
-                    <img src="{LOGO_SRC}" alt="Redis" style="height: 40px; margin-bottom: 16px;">
-                    <h2 style="font-family: 'Space Grotesk', sans-serif; color: #0b1220; margin: 0;">Redis LangCache Demo</h2>
-                    <p style="color: #64748b; margin-top: 8px;">Enter the password to access</p>
+                    <img src="{LOGO_SRC}" alt="Redis" style="height: 40px; margin: 0 auto 16px; display: block;">
+                    <h2 style="font-family: 'Space Grotesk', sans-serif; color: #0b1220; margin: 0; text-align: center;">Redis LangCache Demo</h2>
+                    <p style="color: #64748b; margin-top: 8px; text-align: center;">Enter the password to access</p>
                 </div>
             </div>
         """)
@@ -900,13 +940,14 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
             gr.HTML("<div style='flex: 1;'></div>")
 
     with gr.Column(visible=False) as main_app:
-        session_box = render_demo()
+        session_box, logout_btn = render_demo()
 
     # Handle login
-    def handle_login(username, password, state):
+    def handle_login(username, password, state, request: gr.Request):
         if password == APP_PASSWORD:
             state["username"] = username
             state["ams_url"] = AGENT_MEMORY_SERVER_URL
+            state["authenticated"] = True
             return (
                 gr.update(visible=False),
                 gr.update(visible=True),
@@ -915,6 +956,9 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
                 session_md(state),
             )
         else:
+            client_ip = _get_client_ip(request)
+            logger.warning(f"Failed login attempt from IP: {client_ip}")
+            state["authenticated"] = False
             return (
                 gr.update(visible=True),
                 gr.update(visible=False),
@@ -922,6 +966,19 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
                 state,
                 gr.update(),
             )
+
+    # Handle logout
+    def handle_logout(state):
+        state["authenticated"] = False
+        state["username"] = ""
+        state["ams_url"] = ""
+        return (
+            gr.update(visible=True),
+            gr.update(visible=False),
+            "",
+            state,
+            gr.update(value=session_md(state)),
+        )
 
     login_btn.click(
         fn=handle_login,
@@ -933,6 +990,13 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
     password_input.submit(
         fn=handle_login,
         inputs=[username_input, password_input, st],
+        outputs=[login_box, main_app, login_status, st, session_box],
+        show_progress="hidden",
+    )
+
+    logout_btn.click(
+        fn=handle_logout,
+        inputs=[st],
         outputs=[login_box, main_app, login_status, st, session_box],
         show_progress="hidden",
     )
