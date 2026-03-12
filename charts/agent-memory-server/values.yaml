@@ -1,0 +1,19 @@
+#
+
+disableAuth: "true"
+replicaCount: 1
+longTermMemory: "true"
+discreteExtraction: "true"
+
+model:
+  generation: "gpt-5.2-chat-latest"
+  fast: "gpt-5-mini"
+  embedding: "text-embedding-3-small"
+
+redis:
+  secretName: redis-url-secret
+  url: "redis://localhost:6379"
+
+openai:
+  secretName: openai-api-key-secret
+  key: ""

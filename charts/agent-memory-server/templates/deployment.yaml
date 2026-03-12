@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-memory-server
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: agent-memory-server
+  template:
+    metadata:
+      labels:
+        app: agent-memory-server
+    spec:
+      containers:
+        - name: agent-memory-server
+          image: "docker.io/redislabs/agent-memory-server:{{ .Chart.AppVersion }}"
+          imagePullPolicy: Always
+          env:
+            - name: DISABLE_AUTH
+              value: {{ .Values.disableAuth }}
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.secretName }}
+                  key: REDIS_URL
+            - name: LONG_TERM_MEMORY
+              value: {{ .Values.longTermMemory }}
+            - name: ENABLE_DISCRETE_MEMORY_EXTRACTION
+              value: {{ .Values.discreteExtraction }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.openai.secretName }}
+                  key: OPENAI_API_KEY
+            - name: GENERATION_MODEL
+              value: {{ .Values.model.generation }}
+            - name: FAST_MODEL
+              value: {{ .Values.model.fast }}
+            - name: SLOW_MODEL
+              value: {{ .Values.model.generation }}
+            - name: EMBEDDING_MODEL
+              value: {{ .Values.model.embedding }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP

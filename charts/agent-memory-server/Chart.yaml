@@ -1,0 +1,16 @@
+apiVersion: v2
+name: agent-memory-server
+description: Redis Agent Memory Server
+type: application
+version: 0.1.0
+appVersion: "0.13.2"
+keywords:
+  - agent
+  - memory
+  - redis
+home: https://redis.github.io/agent-memory-server/
+sources:
+  - https://github.com/redis/agent-memory-server
+maintainers:
+  - name: Redis Labs
+    url: https://redis.io
