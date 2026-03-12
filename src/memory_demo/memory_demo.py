@@ -4,6 +4,7 @@ import os
 import uuid
 import gradio as gr
 import re
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from pathlib import Path
 from agent_memory_client import MemoryAPIClient, MemoryClientConfig
@@ -67,6 +68,7 @@ SYSTEM_PROMPT = {
 
     Be helpful, friendly, and responsive. Mirror their conversational style - if they're just chatting, chat back. If they ask for help, then help.
     """,
+    "created_at": datetime.now(timezone.utc).isoformat(),
 }
 
 if "TAVILY_API_KEY" not in os.environ:
@@ -334,7 +336,13 @@ async def _get_working_memory(session_id: str, user_id: str) -> WorkingMemory:
     return WorkingMemory(**result.model_dump())
 
 async def _add_message_to_working_memory(session_id: str, user_id: str, role: str, content: str):
-    new_message = [{"role": role, "content": content}]
+    new_message = [
+        {
+            "role": role,
+            "content": content,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    ]
     await memory_client.get_or_create_working_memory(
         session_id=session_id,
         namespace=await _get_namespace(user_id),
@@ -388,15 +396,18 @@ async def _handle_web_search_call(function_call: dict, context_messages: list) -
             {
                 "role": "assistant",
                 "content": f"I'll search for that information: {query}",
+                "created_at": datetime.now(timezone.utc).isoformat(),
             },
             {
                 "role": "function",
                 "name": "web_search",
                 "content": search_results,
+                "created_at": datetime.now(timezone.utc).isoformat(),
             },
             {
                 "role": "user",
                 "content": "Please provide a helpful response based on the search results.",
+                "created_at": datetime.now(timezone.utc).isoformat(),
             },
         ]
 
@@ -425,7 +436,6 @@ async def _handle_memory_tool_call(
 ) -> str:
     function_name = function_call["name"]
 
-    print("Accessing memory...")
     result = await memory_client.resolve_tool_call(
         tool_call=function_call,
         session_id=session_id,
@@ -440,15 +450,18 @@ async def _handle_memory_tool_call(
         {
             "role": "assistant",
             "content": f"Let me {function_name.replace('_', ' ')}...",
+            "created_at": datetime.now(timezone.utc).isoformat(),
         },
         {
             "role": "function",
             "name": function_name,
             "content": result["formatted_response"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
         },
         {
             "role": "user",
             "content": "Please provide a helpful response based on this information.",
+            "created_at": datetime.now(timezone.utc).isoformat(),
         },
     ]
 
@@ -497,7 +510,17 @@ async def _generate_response(
     context_messages_dicts = []
     for msg in context_messages:
         if hasattr(msg, "role") and hasattr(msg, "content"):
-            msg_dict = {"role": msg.role, "content": msg.content}
+            created_at = getattr(msg, "created_at", None)
+            if isinstance(created_at, datetime):
+                created_at = created_at.isoformat()
+            elif created_at is None:
+                created_at = datetime.now(timezone.utc).isoformat()
+            
+            msg_dict = {
+                "role": msg.role,
+                "content": msg.content,
+                "created_at": created_at
+            }
             context_messages_dicts.append(msg_dict)
         else:
             context_messages_dicts.append(msg)
@@ -591,6 +614,7 @@ async def _generate_response(
                 "role": "assistant",
                 "content": response.content or "",
                 "tool_calls": normalized_calls,
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
 
             tool_messages: list[dict] = []
@@ -614,6 +638,7 @@ async def _generate_response(
                         "tool_call_id": tc.get("id", f"tool_call_{i}"),
                         "name": tc.get("function", {}).get("name", ""),
                         "content": content,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
                     }
                 )
 
@@ -694,6 +719,7 @@ async def _generate_response(
                         "role": "assistant",
                         "content": followup.content or "",
                         "tool_calls": norm_follow,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
                     }
                 )
                 for k, (fc, fr, fid, fname, fargs) in enumerate(follow_results):
@@ -716,11 +742,15 @@ async def _generate_response(
                             "tool_call_id": fid,
                             "name": fname,
                             "content": content,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
                         }
                     )
                 followup = llm.invoke(messages)
 
-            return str(followup.content)
+            response_content = str(followup.content) if followup.content is not None else ""
+            if not response_content or not response_content.strip():
+                return "I've updated your preferences with that information."
+            return response_content
 
         if hasattr(response, "additional_kwargs") and "function_call" in response.additional_kwargs:
             return await _handle_function_call(
@@ -730,7 +760,7 @@ async def _generate_response(
                 user_id,
             )
 
-        response_content = str(response.content)
+        response_content = str(response.content) if response.content is not None else ""
 
         if not response_content or not response_content.strip():
             logger.error("Empty response from LLM in main response generation")
@@ -771,7 +801,18 @@ async def process_user_input(
         try:
             working_memory = await _get_working_memory(session_id, user_id)
             preferences = await _extract_preferences(
-                [{"role": msg.role, "content": msg.content} for msg in working_memory.messages]
+                [
+                    {
+                        "role": msg.role,
+                        "content": msg.content,
+                        "created_at": (
+                            msg.created_at.isoformat()
+                            if isinstance(getattr(msg, "created_at", None), datetime)
+                            else getattr(msg, "created_at", datetime.now(timezone.utc).isoformat())
+                        )
+                    }
+                    for msg in working_memory.messages
+                ]
             )
             if preferences:
                 logger.info(f"Extracted preferences: {preferences}")
