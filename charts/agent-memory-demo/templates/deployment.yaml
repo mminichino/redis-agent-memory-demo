@@ -23,17 +23,17 @@ spec:
             - name: TAVILY_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.keys.tavily }}
+                  name: {{ .Values.secrets.tavily }}
                   key: TAVILY_API_KEY
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.keys.openai }}
+                  name: {{ .Values.secrets.openai }}
                   key: OPENAI_API_KEY
             - name: APP_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.password }}
+                  name: {{ .Values.secrets.password }}
                   key: APP_PASSWORD
           ports:
             - name: http
