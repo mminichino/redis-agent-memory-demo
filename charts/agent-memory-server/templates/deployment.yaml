@@ -16,6 +16,8 @@ spec:
       containers:
         - name: agent-memory-server
           image: "docker.io/redislabs/agent-memory-server:{{ .Chart.AppVersion }}"
+          command: [ "agent-memory" ]
+          args: [ "api", "--host", "0.0.0.0", "--port", "8000", "--task-backend", "asyncio" ]
           imagePullPolicy: Always
           env:
             - name: DISABLE_AUTH
