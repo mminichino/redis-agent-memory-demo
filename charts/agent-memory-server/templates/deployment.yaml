@@ -19,29 +19,29 @@ spec:
           imagePullPolicy: Always
           env:
             - name: DISABLE_AUTH
-              value: {{ .Values.disableAuth }}
+              value: {{ .Values.disableAuth | quote }}
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.redis.secretName }}
                   key: REDIS_URL
             - name: LONG_TERM_MEMORY
-              value: {{ .Values.longTermMemory }}
+              value: {{ .Values.longTermMemory | quote }}
             - name: ENABLE_DISCRETE_MEMORY_EXTRACTION
-              value: {{ .Values.discreteExtraction }}
+              value: {{ .Values.discreteExtraction | quote }}
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.openai.secretName }}
                   key: OPENAI_API_KEY
             - name: GENERATION_MODEL
-              value: {{ .Values.model.generation }}
+              value: {{ .Values.model.generation | quote }}
             - name: FAST_MODEL
-              value: {{ .Values.model.fast }}
+              value: {{ .Values.model.fast | quote }}
             - name: SLOW_MODEL
-              value: {{ .Values.model.generation }}
+              value: {{ .Values.model.generation | quote }}
             - name: EMBEDDING_MODEL
-              value: {{ .Values.model.embedding }}
+              value: {{ .Values.model.embedding | quote }}
           ports:
             - name: http
               containerPort: 8000

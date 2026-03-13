@@ -17,3 +17,12 @@ redis:
 openai:
   secretName: openai-api-key-secret
   key: ""
+
+externalSecret:
+  enabled: false
+  store:
+    kind: ClusterSecretStore
+    name: "secret-store"
+  keys:
+    redis: "redis-url-key"
+    openai: "openai-api-key"
