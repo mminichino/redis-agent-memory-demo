@@ -1,0 +1,31 @@
+#
+
+name: agent-memory-demo
+service: agent-memory-demo
+replicaCount: 1
+password: ""
+
+server:
+  url: ""
+
+keys:
+  openai: ""
+  tavily: ""
+
+secrets:
+  openai: "openai-api-key-secret"
+  tavily: "tavily-api-key-secret"
+  password: "agent-memory-demo-password"
+
+dns:
+  domain: ""
+
+externalSecret:
+  enabled: false
+  store:
+    kind: ClusterSecretStore
+    name: "secret-store"
+  keys:
+    openai: "openai-api-key"
+    tavily: "tavily-api-key"
+    password: "agent-memory-demo-password"

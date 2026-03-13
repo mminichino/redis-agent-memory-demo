@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-memory-demo
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: agent-memory-demo
+  template:
+    metadata:
+      labels:
+        app: agent-memory-demo
+    spec:
+      containers:
+        - name: agent-memory-demo
+          image: "docker.io/mminichino/agent-memory-demo:{{ .Chart.AppVersion }}"
+          imagePullPolicy: Always
+          env:
+            - name: AGENT_MEMORY_SERVER_URL
+              value: {{ .Values.server.url | quote }}
+            - name: TAVILY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keys.tavily }}
+                  key: TAVILY_API_KEY
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keys.openai }}
+                  key: OPENAI_API_KEY
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.password }}
+                  key: APP_PASSWORD
+          ports:
+            - name: http
+              containerPort: 7860
+              protocol: TCP
