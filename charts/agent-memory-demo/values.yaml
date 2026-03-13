@@ -13,8 +13,8 @@ keys:
   tavily: ""
 
 secrets:
-  openai: "openai-api-key-secret"
-  tavily: "tavily-api-key-secret"
+  openai: "openai-api-key-demo-secret"
+  tavily: "tavily-api-key-demo-secret"
   password: "agent-memory-demo-password"
 
 dns:
