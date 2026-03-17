@@ -114,9 +114,6 @@ QUESTIONS = [
 ]
 
 async def run_exercise(user_count: int, question_count: int):
-    """
-    Iterates over a list of user IDs and processes a list of messages per user.
-    """
     questions_to_ask = QUESTIONS[:question_count]
     for i in range(1, user_count + 1):
         user_id = f"user{i}"
