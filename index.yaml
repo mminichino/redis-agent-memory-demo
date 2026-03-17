@@ -83,6 +83,26 @@ entries:
     version: 0.1.0
   agent-memory-server:
   - apiVersion: v2
+    appVersion: 0.14.0
+    created: "2026-03-17T17:35:09.073540262Z"
+    description: Redis Agent Memory Server
+    digest: dac95d1869ee50e70e8db1e50f515ff11a82bc9883a1ce2411de83518ea020ca
+    home: https://redis.github.io/agent-memory-server/
+    keywords:
+    - agent
+    - memory
+    - redis
+    maintainers:
+    - name: Redis Labs
+      url: https://redis.io
+    name: agent-memory-server
+    sources:
+    - https://github.com/redis/agent-memory-server
+    type: application
+    urls:
+    - https://github.com/mminichino/redis-agent-memory-demo/releases/download/agent-memory-server-0.2.0/agent-memory-server-0.2.0.tgz
+    version: 0.2.0
+  - apiVersion: v2
     appVersion: 0.13.2
     created: "2026-03-13T22:12:12.939903846Z"
     description: Redis Agent Memory Server
@@ -142,4 +162,4 @@ entries:
     urls:
     - https://github.com/mminichino/redis-agent-memory-demo/releases/download/agent-memory-server-0.1.0/agent-memory-server-0.1.0.tgz
     version: 0.1.0
-generated: "2026-03-13T22:12:12.939930525Z"
+generated: "2026-03-17T17:35:09.073568652Z"
