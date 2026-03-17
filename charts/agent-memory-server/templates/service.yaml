@@ -7,8 +7,8 @@ spec:
   type: ClusterIP
   ports:
     - name: http
-      port: 8000
-      targetPort: 8000
+      port: {{ .Values.port }}
+      targetPort: {{ .Values.port }}
       protocol: TCP
   selector:
     app: agent-memory-server
