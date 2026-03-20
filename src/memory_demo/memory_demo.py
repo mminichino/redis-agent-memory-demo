@@ -2,13 +2,13 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from typing import Optional
 import gradio as gr
-import re
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from pathlib import Path
 from agent_memory_client import MemoryAPIClient, MemoryClientConfig
-from agent_memory_client.models import WorkingMemory, ClientMemoryRecord, MemoryTypeEnum
+from agent_memory_client.models import WorkingMemory, MemoryRecord
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from memory_demo import __version__ as app_version
@@ -47,14 +47,29 @@ SYSTEM_PROMPT = {
 
     Available tools:
 
-    1. **web_search** (if available): Search for additional information when specifically needed.
+    1. **web_search**: Search for additional information when specifically needed.
 
-    2. **Memory Management Tools** (always available):
+    2. **Memory Management Tools**:
        - **search_memory**: Look up previous conversations and stored information
        - **get_or_create_working_memory**: Check current session context
-       - **lazily_create_long_term_memory**: Store important preferences or information
+       - **create_long_term_memory**: Store important preferences or episodic facts in long term memory
        - **update_working_memory_data**: Save session-specific data
 
+    **Long Term Memory Guidelines**:
+    
+    - Store preferences or profile information in long term memory, focusing only on durable, reusable preferences or traits, including:
+        - Personal preferences (e.g., food, tools, UI settings, workflows)
+        - Travel preferences (e.g., preferred destinations, travel modes, budget)
+        - Communication preferences (e.g., tone, format, verbosity)
+        - Technical preferences (e.g., frameworks, languages, architectures)
+        - Behavioral tendencies (e.g., prefers automation, avoids GUIs)
+        - Environmental defaults (e.g., units, time format, OS)
+        
+    - Identify episodic facts and time-bound knowledge from user messages and store them in long term memory. Examples of episodic facts:
+        - Events (visited a place, attended a meeting, made a purchase),
+        - Time-bound states (subscription expiring, trial ending, appointment scheduled)
+        - Temporal activities (travel, actions taken, deadlines)
+    
     **Guidelines**:
     - Answer the user's actual question first and directly
     - When someone shares information (like "I like X"), simply acknowledge it naturally - don't immediately give advice or suggestions unless they ask
@@ -64,7 +79,7 @@ SYSTEM_PROMPT = {
     - Only offer suggestions, recommendations, or tips if the user explicitly asks for them
     - Store preferences and important details, but don't be overly eager about it
     - If someone shares a preference, respond like a friend would - acknowledge it, maybe ask a follow-up question, but don't launch into advice
-    - When using **lazily_create_long_term_memory**, ensure you provide the **text** parameter with the content you want to store and the **memory_type** (episodic or semantic).
+    - When using **create_long_term_memory**, ensure you provide the **text** parameter with the content you want to store and the **memory_type** (episodic or semantic).
 
     Be helpful, friendly, and responsive. Mirror their conversational style - if they're just chatting, chat back. If they ask for help, then help.
     """,
@@ -302,27 +317,13 @@ button.primary:hover, .gr-button-primary:hover {
 }
 """
 
-async def _extract_preferences(messages: list) -> list[str]:
-    extraction_prompt = [
-        {"role": "system", "content": "You are a helpful assistant that extracts personal user preferences from a conversation. "
-                                     "Provide a list of concise strings representing the user's preferences, "
-                                     "such as 'User likes coffee', 'User prefers dark mode', etc. "
-                                     "If no preferences are found, return an empty list. "
-                                     "Return the result as a JSON array of strings."},
-        {"role": "user", "content": f"Extract preferences from these messages: {json.dumps(messages)}"}
-    ]
-    try:
-        response = llm.invoke(extraction_prompt)
-        content = str(response.content)
-
-        match = re.search(r"\[.*]", content, re.DOTALL)
-        if match:
-            preferences = json.loads(match.group(0))
-            if isinstance(preferences, list):
-                return [str(p) for p in preferences]
-    except Exception as e:
-        logger.error(f"Error extracting preferences: {e}")
-    return []
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, MemoryRecord):
+            return obj.model_dump()
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return json.JSONEncoder.default(self, obj)
 
 async def _get_namespace(user_id: str) -> str:
     return f"demo_agent:{user_id}"
@@ -356,6 +357,7 @@ async def _add_message_to_working_memory(session_id: str, user_id: str, role: st
 
 async def _search_web(query: str) -> str:
     try:
+        logger.info(f"Searching the web for: {query}")
         tool = TavilySearch(max_results=3)
         response = tool.invoke(query)
         if isinstance(response, str):
@@ -385,45 +387,12 @@ async def _search_web(query: str) -> str:
         logger.error(f"Error performing web search: {e}")
         return f"Error performing web search: {str(e)}"
 
-async def _handle_web_search_call(function_call: dict, context_messages: list) -> str:
+async def _handle_web_search_call(function_call: dict) -> str:
     logger.info("Searching the web")
     try:
         function_args = json.loads(function_call["arguments"])
         query = function_args.get("query", "")
-        search_results = await _search_web(query)
-
-        follow_up_messages = context_messages + [
-            {
-                "role": "assistant",
-                "content": f"I'll search for that information: {query}",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            },
-            {
-                "role": "function",
-                "name": "web_search",
-                "content": search_results,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            },
-            {
-                "role": "user",
-                "content": "Please provide a helpful response based on the search results.",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            },
-        ]
-
-        final_response = llm.invoke(follow_up_messages)
-        response_content = str(final_response.content)
-
-        if not response_content or not response_content.strip():
-            if (getattr(final_response, "tool_calls", None) or
-                (hasattr(final_response, "additional_kwargs") and "tool_calls" in final_response.additional_kwargs)):
-                logger.info("Web search result led to more tool calls, but handling in simple handler is limited.")
-            
-            logger.error("Empty response from LLM in web search call handler")
-            return "I apologize, but I couldn't generate a response after the web search."
-
-        return response_content
-
+        return await _search_web(query)
     except (json.JSONDecodeError, TypeError):
         logger.error(f"Invalid web search arguments: {function_call}")
         return "I'm sorry, I encountered an error processing your web search request. Please try again."
@@ -492,9 +461,10 @@ async def _handle_function_call(
         user_id: str,
 ) -> str:
     function_name = function_call["name"]
+    logger.info(f"Handling function call: {function_name}")
 
     if function_name == "web_search":
-        return await _handle_web_search_call(function_call, context_messages)
+        return await _handle_web_search_call(function_call)
 
     return await _handle_memory_tool_call(
         function_call, context_messages, session_id, user_id
@@ -503,9 +473,16 @@ async def _handle_function_call(
 async def _generate_response(
         session_id: str,
         user_id: str,
+        messages: Optional[list] = None,
+        iteration: Optional[int] = 1,
 ) -> str:
-    working_memory = await _get_working_memory(session_id, user_id)
-    context_messages = working_memory.messages
+    logger.info(f"Generate: user {user_id}: session {session_id}: iteration {iteration}")
+    if not messages:
+        working_memory = await _get_working_memory(session_id, user_id)
+        context_messages = working_memory.messages
+    else:
+        logger.info(f"Iteration {iteration} with {len(messages)} messages")
+        context_messages = messages
 
     context_messages_dicts = []
     for msg in context_messages:
@@ -526,15 +503,23 @@ async def _generate_response(
             context_messages_dicts.append(msg)
 
     context_messages = [
-        msg for msg in context_messages_dicts if msg.get("role") != "system"
+        msg for msg in context_messages_dicts
     ]
-    context_messages.insert(0, SYSTEM_PROMPT)
+
+    if iteration == 1:
+        context_messages.insert(0, SYSTEM_PROMPT)
 
     try:
-        logger.info(f"Context messages: {context_messages}")
+        current_message = context_messages[-1]
+        logger.info(f"Role: {current_message.get('role')}")
+        if current_message.get('role') == "user":
+            logger.info(f"Content: {current_message.get('content')}")
+
         response = llm.invoke(context_messages)
 
         tool_calls = getattr(response, "tool_calls", [])
+        logger.debug(f"Tools to call:\n{json.dumps(tool_calls, indent=2)}")
+
         if not tool_calls and hasattr(response, "additional_kwargs"):
             tool_calls = response.additional_kwargs.get("tool_calls", [])
 
@@ -547,7 +532,7 @@ async def _generate_response(
                     else:
                         name = tc.get("function", {}).get("name", tc.get("name", ""))
                         args_value = tc.get("function", {}).get(
-                            "arguments", tc.get("arguments", {})
+                            "arguments", tc.get("args", {})
                         )
                         if not isinstance(args_value, str):
                             try:
@@ -586,13 +571,20 @@ async def _generate_response(
                     )
 
             results = []
+            logger.debug(f"Normalized tool calls:\n{json.dumps(normalized_calls, indent=2)}")
             for call in normalized_calls:
                 fname = call.get("function", {}).get("name", "")
                 try:
+                    logger.info(f"Calling tool: {fname}")
                     if fname == "web_search":
                         args = json.loads(call.get("function", {}).get("arguments", "{}"))
                         res_content = await _search_web(args.get("query", ""))
-                        res = {"success": True, "result": res_content, "formatted_response": res_content}
+                        res = {
+                            "success": True,
+                            "function_name": fname,
+                            "result": res_content,
+                            "formatted_response": res_content
+                        }
                     else:
                         res = await memory_client.resolve_tool_call(
                             tool_call={
@@ -610,6 +602,10 @@ async def _generate_response(
                     res = {"success": False, "error": str(e)}
                 results.append((call, res))
 
+            for i, (tc, res) in enumerate(results):
+                logger.info(f"Tool {res.get('function_name', 'unknown')} success: {res.get('success', False)}")
+                logger.debug(f"Tool calls result #{i}:\n{json.dumps(res, cls=CustomEncoder, indent=2)}")
+
             assistant_tools_msg = {
                 "role": "assistant",
                 "content": response.content or "",
@@ -625,7 +621,7 @@ async def _generate_response(
                     payload = res.get("result")
                     try:
                         content = (
-                            json.dumps(payload)
+                            json.dumps(payload, cls=CustomEncoder)
                             if isinstance(payload, (dict, list))
                             else str(res.get("formatted_response", ""))
                         )
@@ -645,112 +641,8 @@ async def _generate_response(
             messages = (
                     context_messages + [assistant_tools_msg] + tool_messages
             )
-            followup = llm.invoke(messages)
-            rounds = 0
-            max_rounds = 1
-            while (
-                    rounds < max_rounds
-                    and (getattr(followup, "tool_calls", None) or
-                         (hasattr(followup, "additional_kwargs") and "tool_calls" in followup.additional_kwargs))
-            ):
-                rounds += 1
-                follow_calls = getattr(followup, "tool_calls", [])
-                if not follow_calls and hasattr(followup, "additional_kwargs"):
-                    follow_calls = followup.additional_kwargs.get("tool_calls", [])
 
-                follow_results = []
-                for _j, fcall in enumerate(follow_calls):
-                    if isinstance(fcall, dict):
-                        fname = fcall.get("function", {}).get("name", fcall.get("name", ""))
-                        fargs = fcall.get("function", {}).get("arguments", fcall.get("arguments", fcall.get("args", {})))
-                        fid = fcall.get("id", f"tool_call_follow_{_j}")
-                    else:
-                        fname = getattr(fcall, "name", "")
-                        fargs = getattr(fcall, "args", {})
-                        fid = getattr(fcall, "id", f"tool_call_follow_{_j}")
-
-                    try:
-                        if fname == "web_search":
-                            if isinstance(fargs, str):
-                                try:
-                                    fargs = json.loads(fargs)
-                                except json.JSONDecodeError:
-                                    fargs = {}
-                            res_content = await _search_web(fargs.get("query", ""))
-                            fres = {"success": True, "result": res_content, "formatted_response": res_content}
-                        else:
-                            fres = await memory_client.resolve_tool_call(
-                                tool_call={"name": fname, "arguments": json.dumps(fargs) if not isinstance(fargs, str) else fargs},
-                                session_id=session_id,
-                                namespace=await _get_namespace(user_id),
-                                user_id=user_id,
-                            )
-                    except Exception as e:
-                        logger.error(
-                            f"Follow-up tool '{fname}' failed: {e}"
-                        )
-                        fres = {"success": False, "error": str(e)}
-                    follow_results.append((fcall, fres, fid, fname, fargs))
-
-                norm_follow = []
-                for idx2, (fc, fr, fid, fname, fargs) in enumerate(follow_results):
-                    if not isinstance(fargs, str):
-                        try:
-                            fargs_str = json.dumps(fargs)
-                        except Exception as e:
-                            logger.error(f"Error serializing args: {e}")
-                            fargs_str = "{}"
-                    else:
-                        fargs_str = fargs
-
-                    norm_follow.append(
-                        {
-                            "id": fid,
-                            "type": "function",
-                            "function": {
-                                "name": fname,
-                                "arguments": fargs_str,
-                            },
-                        }
-                    )
-
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": followup.content or "",
-                        "tool_calls": norm_follow,
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-                for k, (fc, fr, fid, fname, fargs) in enumerate(follow_results):
-                    if not fr.get("success", False):
-                        content = f"Error calling follow-up tool '{fname}': {fr.get('error')}"
-                    else:
-                        payload = fr.get("result")
-                        try:
-                            content = (
-                                json.dumps(payload)
-                                if isinstance(payload, (dict, list))
-                                else str(fr.get("formatted_response", ""))
-                            )
-                        except Exception as e:
-                            logger.error(f"Error serializing payload: {e}")
-                            content = str(fr.get("formatted_response", ""))
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": fid,
-                            "name": fname,
-                            "content": content,
-                            "created_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-                followup = llm.invoke(messages)
-
-            response_content = str(followup.content) if followup.content is not None else ""
-            if not response_content or not response_content.strip():
-                return "I've updated your preferences with that information."
-            return response_content
+            return await _generate_response(session_id, user_id, messages, iteration + 1)
 
         if hasattr(response, "additional_kwargs") and "function_call" in response.additional_kwargs:
             return await _handle_function_call(
@@ -798,38 +690,6 @@ async def process_user_input(
             session_id, user_id, "assistant", response
         )
 
-        try:
-            working_memory = await _get_working_memory(session_id, user_id)
-            preferences = await _extract_preferences(
-                [
-                    {
-                        "role": msg.role,
-                        "content": msg.content,
-                        "created_at": (
-                            msg.created_at.isoformat()
-                            if isinstance(getattr(msg, "created_at", None), datetime)
-                            else getattr(msg, "created_at", datetime.now(timezone.utc).isoformat())
-                        )
-                    }
-                    for msg in working_memory.messages
-                ]
-            )
-            if preferences:
-                logger.info(f"Extracted preferences: {preferences}")
-                memories = [
-                    ClientMemoryRecord(
-                        text=pref,
-                        user_id=user_id,
-                        namespace=await _get_namespace(user_id),
-                        memory_type=MemoryTypeEnum.SEMANTIC
-                    )
-                    for pref in preferences
-                ]
-                await memory_client.create_long_term_memory(memories)
-                logger.info(f"Stored {len(memories)} preferences in long-term memory")
-        except Exception as e:
-            logger.error(f"Error storing preferences: {e}")
-
         return response
 
     except Exception as e:
@@ -861,7 +721,7 @@ async def chat_fn(message, _, state, request: gr.Request):
         return
 
     user_id = state.get("username", "guest")
-    session_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, user_id))
+    session_id = state.get("session_id", "guest")
     reply = await process_user_input(message, session_id, user_id)
     builder = ""
 
@@ -872,9 +732,11 @@ async def chat_fn(message, _, state, request: gr.Request):
 def session_md(state):
     username = state.get("username", "Guest")
     ams_url = state.get("ams_url", "Not set")
+    session_id = state.get("session_id", "Not set")
 
     return f"""
 - **Username:** {username}
+- **Session ID:** {session_id}
 - **Agent Memory Server URL:** {ams_url}
 """
 
@@ -949,7 +811,7 @@ def check_password(password):
 
 # Wrap the demo with password protection
 with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
-    st = gr.State({"username": "", "ams_url": "", "history": [], "authenticated": False})
+    st = gr.State({"username": "", "ams_url": "", "history": [], "authenticated": False, "session_id": str(uuid.uuid4())})
 
     with gr.Column(visible=True, elem_id="login-container") as login_box:
         gr.HTML(f"""
@@ -989,6 +851,7 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
             state["username"] = username
             state["ams_url"] = AGENT_MEMORY_SERVER_URL
             state["authenticated"] = True
+            state["session_id"] = str(uuid.uuid4())
             return (
                 gr.update(visible=False),
                 gr.update(visible=True),
