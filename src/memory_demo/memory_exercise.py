@@ -56,8 +56,12 @@ async def run_exercise(user_count: int, question_count: int):
             question = await generate_message(history)
 
             typer.echo(f"User (Session: {session_id}): {question}")
-            response = await process_user_input(question, session_id, user_id)
-            typer.echo(f"Assistant: {response}")
+            async for response in process_user_input(question, session_id, user_id):
+                if isinstance(response, dict):
+                    response_content = response.get("content", "")
+                else:
+                    response_content = str(response)
+                typer.echo(f"Assistant: {response_content}")
 
             typer.echo("-" * 20)
             message_counter += 1

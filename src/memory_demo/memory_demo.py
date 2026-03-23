@@ -2,14 +2,13 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from typing import Optional, AsyncGenerator, Any
+from typing import Optional, AsyncGenerator
 import gradio as gr
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from pathlib import Path
 from agent_memory_client import MemoryAPIClient, MemoryClientConfig
 from agent_memory_client.models import WorkingMemory, MemoryRecord, MemoryMessage
-from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from memory_demo import __version__ as app_version
@@ -413,7 +412,7 @@ async def process_user_input(
         user_input: str,
         session_id: str,
         user_id: str,
-) -> AsyncGenerator[dict[str, str] | str | AIMessage, Any]:
+) -> AsyncGenerator[dict[str, str] | str]:
     logger.info(f"Process user input: user {user_id}: session {session_id}: message {user_input}")
     try:
         working_memory = await _get_working_memory(session_id, user_id)
