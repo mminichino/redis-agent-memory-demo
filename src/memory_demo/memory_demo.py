@@ -2,42 +2,44 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from typing import Optional
+from typing import Optional, AsyncGenerator, Any
 import gradio as gr
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from pathlib import Path
 from agent_memory_client import MemoryAPIClient, MemoryClientConfig
-from agent_memory_client.models import WorkingMemory, MemoryRecord
+from agent_memory_client.models import WorkingMemory, MemoryRecord, MemoryMessage
+from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from memory_demo import __version__ as app_version
 import logging
-import base64
-import secrets
-import string
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s: %(message)s [%(filename)s:%(lineno)d]",
+    force=True,
+)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # ============== Env & Clients ==============
 load_dotenv()
 
 LOGO_PATH = Path(__file__).parent / "public" / "logo.png"
-LOGO_B64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("utf-8")
-LOGO_SRC = f"data:image/png;base64,{LOGO_B64}"
+LOGO_SRC = str(LOGO_PATH)
 if "APP_PASSWORD" in os.environ:
     APP_PASSWORD = os.getenv("APP_PASSWORD")
 else:
-    characters = string.ascii_letters + string.digits
-    APP_PASSWORD = ''.join(secrets.choice(characters) for _ in range(16))
-    logger.info(f"APP_PASSWORD: {APP_PASSWORD}")
+    APP_PASSWORD = "password"
+logger.info(f"APP_PASSWORD: {APP_PASSWORD}")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2-chat-latest")
 AGENT_MEMORY_SERVER_URL = os.getenv("AGENT_MEMORY_SERVER_URL", "http://localhost:8000")
+FUNCTION_CALL_COUNTER = 0
 
 SYSTEM_PROMPT = {
     "role": "system",
@@ -53,6 +55,9 @@ SYSTEM_PROMPT = {
     - If the question depends on freshness, prefer `web_search` instead of guessing.
     - If the question depends on memory, use the appropriate memory tool instead of asking the user to repeat themselves.
     - When a tool is needed, call it rather than answering from unsupported assumptions.
+
+    ## User isolation
+    All memory tools apply only to the current logged-in user. Do not pass a different user_id in tool arguments.
 
     ## Long Term Memory policy
     Store preferences or profile information as semantic records in long term memory.
@@ -119,195 +124,45 @@ llm = ChatOpenAI(model=OPENAI_MODEL).bind_tools(
     available_functions
 )
 
-# ===================== CSS =====================
-CUSTOM_CSS = """
-#login-container {
-    align-items: center;
-}
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+# ===================== THEME =====================
+theme = gr.themes.Soft(
+    primary_hue="slate",
+    secondary_hue="slate",
+    font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui", "sans-serif"],
+)
 
-:root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --radius: 0.625rem;
+APP_CSS = """
+/* Login: center logo and title */
+.login-logo-row { justify-content: center !important; width: 100%; }
+.login-title-wrap { text-align: center; max-width: 28rem; margin: 0 auto; }
+.login-title-wrap h1 { margin-bottom: 0.35rem; font-size: 1.5rem; }
+.login-title-wrap p { margin-top: 0; opacity: 0.85; }
 
-  /* Redis Specific Branding */
-  --redis-red: #D82C20;
-}
+/* Main app: header layout, no clipped logo */
+.app-header { align-items: flex-start !important; flex-wrap: wrap; gap: 0.75rem 1rem; width: 100%; }
+.app-header-logo { flex: 0 0 auto !important; min-width: 0 !important; }
+.app-header-logo .image-container,
+.app-header-logo img { max-width: 56px !important; height: auto !important; object-fit: contain; }
+.app-header-title { flex: 1 1 12rem !important; min-width: 0 !important; }
+.app-header-title h2 { margin: 0 0 0.25rem 0; line-height: 1.25; font-size: 1.35rem; }
+.app-header-title p { margin: 0; }
+.app-header-links { flex: 0 1 14rem !important; min-width: 0 !important; text-align: right; }
+.app-header-links p { margin: 0; line-height: 1.5; }
 
-* { font-family: Inter, system-ui, -apple-system, sans-serif; border-color: var(--border); }
+/* Main column: avoid extra framed border */
+#main-app-root.gr-column { border: none !important; box-shadow: none !important; outline: none !important; }
 
-body, #app-root { 
-  background: var(--background); 
-  color: var(--foreground);
-}
-
-/* HEADER */
-.app-header {
-  position: sticky; top: 0; z-index: 50;
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 14px 16px; background: var(--redis-red); color: #fff;
-  box-shadow: 0 2px 8px rgba(0,0,0,.18);
-}
-.app-header .brand { display: flex; align-items: center; gap: 14px; flex: 1; }
-.app-header .brand img { height: 24px; display: block; }
-.app-header .brand-content { display: flex; flex-direction: column; gap: 4px; flex: 1; }
-.app-header .title {
-  font-family: 'Space Grotesk', Inter, sans-serif;
-  font-size: 20px; font-weight: 700; letter-spacing: .3px;
-  line-height: 1.2;
-}
-.app-header .meta {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  font-size: 12px; opacity: 0.95; font-weight: 500;
-}
-.app-header .meta-item {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 3px 8px; background: rgba(255,255,255,0.15);
-  border-radius: 6px; white-space: nowrap;
-}
-.app-header .meta-item .label { opacity: 0.8; }
-.app-header .meta-item .value { font-weight: 600; }
-.app-header .links { display: flex; gap: 8px; }
-.app-header .links a {
-  display: inline-flex; align-items: center; gap: 8px; color: #fff; text-decoration: none;
-  border: 1px solid rgba(255,255,255,.35); padding: 7px 12px; border-radius: 999px; font-weight: 600; font-size: 12px;
-  transition: background .15s ease, transform .15s ease;
-}
-.app-header .links a:hover { background: rgba(255,255,255,.14); transform: translateY(-1px); }
-
-/* Mobile responsive header */
-@media (max-width: 768px) {
-  .app-header { flex-direction: column; align-items: flex-start; padding: 12px; }
-  .app-header .brand { flex-direction: column; align-items: flex-start; gap: 10px; }
-  .app-header .brand img { height: 20px; }
-  .app-header .title { font-size: 16px; }
-  .app-header .meta { gap: 8px; }
-  .app-header .meta-item { font-size: 11px; padding: 2px 6px; }
-  .app-header .links { width: 100%; justify-content: flex-start; }
-}
-
-/* Config box */
-.config-card {
-  margin: 10px 16px 14px; padding: 12px;
-  background: var(--card);
-  border: 1px solid var(--border); border-radius: var(--radius);
-  color: var(--card-foreground);
-}
-
-.chat-window { display: flex; justify-content: center; margin: 10px 16px; }
-.chat-window > * { width: 100%; max-width: 1200px; }
-
-.card {
-  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px; transition: border-color .2s ease;
-  color: var(--card-foreground);
-}
-.card:hover { border-color: var(--redis-red); }
-.card .card-title {
-  font-family: 'Space Grotesk', Inter, sans-serif;
-  font-size: 18px; font-weight: 700; color: var(--foreground); margin-bottom: 12px;
-  display: flex; align-items: center; gap: 8px;
-}
-
-/* Buttons */
-button.primary, .gr-button-primary {
-  background: var(--redis-red) !important; border-color: var(--redis-red) !important; color: #fff !important;
-  font-weight: 600 !important; transition: all .2s ease !important;
-  border-radius: var(--radius) !important;
-}
-button.primary:hover, .gr-button-primary:hover {
-  background: #c02518 !important; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(216,44,32,.3) !important;
-}
-
-.hero {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin: 16px;
-  padding: 16px 18px;
-  color: var(--card-foreground);
-}
-
-.hero-title {
-  font-family: 'Space Grotesk', Inter, sans-serif;
-  font-size: 26px;
-  font-weight: 700;
-  color: var(--foreground);
-  letter-spacing: .2px;
-  margin: 0 0 8px 0;
-}
-
-.hero-sub {
-  font-size: 14px;
-  color: var(--muted-foreground);
-  line-height: 1.6;
-  margin: 0;
-}
-
-/* Chat interface buttons */
-.chat-window button.secondary-small {
-  padding: 4px 8px !important;
-  font-size: 12px !important;
-  height: auto !important;
-  min-width: unset !important;
-  border: none !important;
-  background: transparent !important;
-  color: var(--muted-foreground) !important;
-  box-shadow: none !important;
-}
-
-.chat-window button.secondary-small:hover {
-  color: var(--foreground) !important;
-  background: var(--secondary) !important;
-}
-
-.chat-window .message-row button {
-  padding: 2px 6px !important;
-  font-size: 11px !important;
-  height: auto !important;
-  min-width: unset !important;
-  border: none !important;
-  background: transparent !important;
-  color: var(--muted-foreground) !important;
-  box-shadow: none !important;
-}
-
-.chat-window .message-row button:hover {
-  color: var(--foreground) !important;
-  background: var(--secondary) !important;
-}
-
-.chat-window .message-row button svg {
-  width: 14px !important;
-  height: 14px !important;
-}
-
-.chat-window button.secondary-small svg {
-  width: 16px !important;
-  height: 16px !important;
-}
-
-.chat-window .message-row button svg,
-.chat-window button.secondary-small svg {
-  stroke-width: 1.5px !important;
+/* Login covers the app while keeping main content mounted (ChatInterface needs to render for first paint). */
+.login-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 10000 !important;
+  width: 100vw !important;
+  max-width: 100vw !important;
+  min-height: 100vh !important;
+  background: var(--body-background-fill, #f8fafc) !important;
+  overflow-y: auto !important;
+  box-sizing: border-box !important;
 }
 """
 
@@ -322,31 +177,38 @@ class CustomEncoder(json.JSONEncoder):
 async def _get_namespace(user_id: str) -> str:
     return f"demo_agent:{user_id}"
 
+def _scoped_tool_arguments(function_name: str, arguments: str, user_id: str) -> str:
+    try:
+        args = json.loads(arguments) if arguments and str(arguments).strip() else {}
+    except (json.JSONDecodeError, TypeError):
+        return arguments if isinstance(arguments, str) else json.dumps(arguments or {})
+    if function_name == "search_memory" and user_id:
+        args["user_id"] = user_id
+    return json.dumps(args)
+
 async def _get_working_memory(session_id: str, user_id: str) -> WorkingMemory:
+    logger.info(f"Get working memory: {user_id} ({session_id})")
     created, result = await memory_client.get_or_create_working_memory(
         session_id=session_id,
+        user_id=user_id,
         namespace=await _get_namespace(user_id),
         model_name="gpt-5.2-chat-latest",
     )
     return WorkingMemory(**result.model_dump())
 
 async def _add_message_to_working_memory(session_id: str, user_id: str, role: str, content: str):
-    new_message = [
-        {
-            "role": role,
-            "content": content,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-    ]
-    await memory_client.get_or_create_working_memory(
-        session_id=session_id,
-        namespace=await _get_namespace(user_id),
-        model_name="gpt-5.2-chat-latest",
+    logger.info(f"Add to working memory: {user_id} ({session_id}) {role}")
+    new_message = MemoryMessage(
+        role=role,
+        content=content,
+        created_at=datetime.now(timezone.utc)
     )
     await memory_client.append_messages_to_working_memory(
         session_id=session_id,
-        messages=new_message,
+        messages=[new_message],
         namespace=await _get_namespace(user_id),
+        user_id=user_id,
+        model_name="gpt-5.2-chat-latest",
     )
 
 async def _search_web(query: str) -> str:
@@ -381,133 +243,23 @@ async def _search_web(query: str) -> str:
         logger.error(f"Error performing web search: {e}")
         return f"Error performing web search: {str(e)}"
 
-async def _handle_web_search_call(function_call: dict) -> str:
-    logger.info("Searching the web")
-    try:
-        function_args = json.loads(function_call["arguments"])
-        query = function_args.get("query", "")
-        return await _search_web(query)
-    except (json.JSONDecodeError, TypeError):
-        logger.error(f"Invalid web search arguments: {function_call}")
-        return "I'm sorry, I encountered an error processing your web search request. Please try again."
-
-async def _handle_memory_tool_call(
-        function_call: dict,
-        context_messages: list,
-        session_id: str,
-        user_id: str,
-) -> str:
-    function_name = function_call["name"]
-
-    result = await memory_client.resolve_tool_call(
-        tool_call=function_call,
-        session_id=session_id,
-        namespace=await _get_namespace(user_id),
-    )
-
-    if not result["success"]:
-        logger.error(f"Function call failed: {result['error']}")
-        return result["formatted_response"]
-
-    follow_up_messages = context_messages + [
-        {
-            "role": "assistant",
-            "content": f"Let me {function_name.replace('_', ' ')}...",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        },
-        {
-            "role": "function",
-            "name": function_name,
-            "content": result["formatted_response"],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        },
-        {
-            "role": "user",
-            "content": "Please provide a helpful response based on this information.",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        },
-    ]
-
-    final_response = llm.invoke(follow_up_messages)
-    response_content = str(final_response.content)
-
-    if not response_content or not response_content.strip():
-        if (getattr(final_response, "tool_calls", None) or
-            (hasattr(final_response, "additional_kwargs") and "tool_calls" in final_response.additional_kwargs)):
-             logger.info(f"Memory tool call {function_name} led to more tool calls.")
-
-        logger.error(
-            f"Empty response from LLM in memory tool call handler. Function: {function_name}"
-        )
-        logger.error(f"Response object: {final_response}")
-        logger.error(f"Response content: '{final_response.content}'")
-        logger.error(
-            f"Response additional_kwargs: {getattr(final_response, 'additional_kwargs', {})}"
-        )
-        return "I apologize, but I couldn't generate a proper response to your request."
-
-    return response_content
-
-async def _handle_function_call(
-        function_call: dict,
-        context_messages: list,
-        session_id: str,
-        user_id: str,
-) -> str:
-    function_name = function_call["name"]
-    logger.info(f"Handling function call: {function_name}")
-
-    if function_name == "web_search":
-        return await _handle_web_search_call(function_call)
-
-    return await _handle_memory_tool_call(
-        function_call, context_messages, session_id, user_id
-    )
-
 async def _generate_response(
         session_id: str,
         user_id: str,
-        messages: Optional[list] = None,
+        context_messages: Optional[list[dict[str, str]]],
         iteration: Optional[int] = 1,
-) -> str:
-    logger.info(f"Generate: user {user_id}: session {session_id}: iteration {iteration}")
-    if not messages:
-        working_memory = await _get_working_memory(session_id, user_id)
-        context_messages = working_memory.messages
-    else:
-        logger.info(f"Iteration {iteration} with {len(messages)} messages")
-        context_messages = messages
-
-    context_messages_dicts = []
-    for msg in context_messages:
-        if hasattr(msg, "role") and hasattr(msg, "content"):
-            created_at = getattr(msg, "created_at", None)
-            if isinstance(created_at, datetime):
-                created_at = created_at.isoformat()
-            elif created_at is None:
-                created_at = datetime.now(timezone.utc).isoformat()
-            
-            msg_dict = {
-                "role": msg.role,
-                "content": msg.content,
-                "created_at": created_at
-            }
-            context_messages_dicts.append(msg_dict)
-        else:
-            context_messages_dicts.append(msg)
-
-    context_messages = [
-        msg for msg in context_messages_dicts
-    ]
-
-    if iteration == 1:
-        context_messages.insert(0, SYSTEM_PROMPT)
-
+) -> AsyncGenerator[dict[str, str] | str]:
+    logger.info(f"Generate: {user_id} ({session_id}) iteration {iteration} with {len(context_messages)} messages")
     try:
         current_message = context_messages[-1]
-        logger.info(f"Role: {current_message.get('role')}")
+        msg_role = current_message.get("role", "none")
+        msg_content = current_message.get("content", "")
+        logger.info(f"Role: {msg_role}")
         if current_message.get('role') == "user":
-            logger.info(f"Content: {current_message.get('content')}")
+            logger.info(f"Content: {msg_content}")
+            await _add_message_to_working_memory(
+                session_id, user_id, "user", msg_content
+            )
 
         response = llm.invoke(context_messages)
 
@@ -568,6 +320,10 @@ async def _generate_response(
             logger.debug(f"Normalized tool calls:\n{json.dumps(normalized_calls, indent=2)}")
             for call in normalized_calls:
                 fname = call.get("function", {}).get("name", "")
+                yield {
+                    "role": "assistant",
+                    "content": f"Calling tool: {fname}..."
+                }
                 try:
                     logger.info(f"Calling tool: {fname}")
                     if fname == "web_search":
@@ -580,11 +336,14 @@ async def _generate_response(
                             "formatted_response": res_content
                         }
                     else:
+                        raw_args = call.get("function", {}).get("arguments", "{}")
+                        if isinstance(raw_args, dict):
+                            raw_args = json.dumps(raw_args)
                         res = await memory_client.resolve_tool_call(
                             tool_call={
                                 "name": fname,
-                                "arguments": call.get("function", {}).get(
-                                    "arguments", "{}"
+                                "arguments": _scoped_tool_arguments(
+                                    fname, raw_args, user_id
                                 ),
                             },
                             session_id=session_id,
@@ -636,59 +395,42 @@ async def _generate_response(
                     context_messages + [assistant_tools_msg] + tool_messages
             )
 
-            return await _generate_response(session_id, user_id, messages, iteration + 1)
-
-        if hasattr(response, "additional_kwargs") and "function_call" in response.additional_kwargs:
-            return await _handle_function_call(
-                response.additional_kwargs["function_call"],
-                context_messages,
-                session_id,
-                user_id,
+            async for resp in _generate_response(session_id, user_id, messages, iteration + 1):
+                yield resp
+        elif response.content is not None:
+            await _add_message_to_working_memory(
+                session_id, user_id, "assistant", str(response.content)
             )
-
-        response_content = str(response.content) if response.content is not None else ""
-
-        if not response_content or not response_content.strip():
-            logger.error("Empty response from LLM in main response generation")
-            logger.error(f"Response object: {response}")
-            logger.error(f"Response content: '{response.content}'")
-            logger.error(
-                f"Response additional_kwargs: {getattr(response, 'additional_kwargs', {})}"
-            )
-            return "I apologize, but I couldn't generate a proper response to your request."
-
-        return response_content
+            yield response.model_dump()
     except Exception as e:
-        logger.error(f"Error generating response: {e}")
-        return "I'm sorry, I encountered an error processing your request."
+        logger.error(f"Error generating response: {e}", exc_info=True)
+        yield {
+            "role": "assistant",
+            "content": "I'm sorry, I encountered an error processing your request."
+        }
 
 async def process_user_input(
         user_input: str,
         session_id: str,
         user_id: str,
-) -> str:
+) -> AsyncGenerator[dict[str, str] | str | AIMessage, Any]:
+    logger.info(f"Process user input: user {user_id}: session {session_id}: message {user_input}")
     try:
-        await _add_message_to_working_memory(
-            session_id, user_id, "user", user_input
-        )
+        working_memory = await _get_working_memory(session_id, user_id)
+        context_messages: list[dict[str, str]] = [msg.model_dump(include={'role', 'content'}) for msg in working_memory.messages]
+        context_messages.insert(0, SYSTEM_PROMPT)
+        context_messages.append({"role": "user", "content": user_input})
 
-        response = await _generate_response(
-            session_id, user_id
-        )
-
-        if not response or not response.strip():
-            logger.error("Generated response is empty, using fallback message")
-            response = "I'm sorry, I encountered an error generating a response to your request."
-
-        await _add_message_to_working_memory(
-            session_id, user_id, "assistant", response
-        )
-
-        return response
-
+        async for response in _generate_response(
+            session_id, user_id, context_messages
+        ):
+            yield response
     except Exception as e:
         logger.exception(f"Error processing user input: {e}")
-        return "I'm sorry, I encountered an error processing your request."
+        yield {
+            "role": "assistant",
+            "content": "I'm sorry, I encountered an error processing your request."
+        }
 
 def _get_client_ip(request: gr.Request | None) -> str:
     if request is None:
@@ -707,21 +449,12 @@ def _get_client_ip(request: gr.Request | None) -> str:
 
     return "unknown"
 
-async def chat_fn(message, _, state, request: gr.Request):
-    if not state.get("authenticated", False):
-        client_ip = _get_client_ip(request)
-        logger.warning(f"Unauthorized access attempt from IP: {client_ip}")
-        yield "Unauthorized. Please log in first."
-        return
-
+async def chat_fn(message, _, state):
     user_id = state.get("username", "guest")
     session_id = state.get("session_id", "guest")
-    reply = await process_user_input(message, session_id, user_id)
-    builder = ""
-
-    for ch in reply:
-        builder += ch
-        yield builder
+    logger.info(f"Chat: user {user_id}: session {session_id}: message {message}")
+    async for response in process_user_input(message, session_id, user_id):
+        yield response
 
 def session_md(state):
     username = state.get("username", "Guest")
@@ -736,50 +469,41 @@ def session_md(state):
 
 # ============== Demo ==============
 def render_demo():
-    # Header with logo + links
-    gr.HTML(f"""
-      <div class="app-header">
-        <div class="brand">
-          <img src="{LOGO_SRC}" alt="Redis">
-          <div class="brand-content">
-            <div class="title">Redis Memory Server Demo</div>
-            <div class="meta">
-              <div class="meta-item">
-                <span class="label">Version:</span>
-                <span class="value">{app_version}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="links">
-          <a href="https://www.linkedin.com/in/michael-minichino/" target="_blank" rel="noopener">💼 LinkedIn</a>
-          <a href="https://redis.io/" target="_blank" rel="noopener">🔗 Redis</a>
-          <a href="https://github.com/mminichino/redis-agent-memory-demo" target="_blank" rel="noopener">⭐ GitHub Repo</a>
-        </div>
-      </div>
-    """)
+    with gr.Row(elem_classes=["app-header"]):
+        with gr.Column(scale=0, min_width=64, elem_classes=["app-header-logo"]):
+            gr.Image(
+                LOGO_SRC,
+                show_label=False,
+                container=False,
+                height=56,
+                width=56,
+                interactive=False,
+            )
+        with gr.Column(scale=1, min_width=0, elem_classes=["app-header-title"]):
+            gr.Markdown(
+                f"## Redis Memory Server Demo\n**Version:** {app_version}",
+            )
+        with gr.Column(scale=0, min_width=200, elem_classes=["app-header-links"]):
+            gr.Markdown(
+                "[LinkedIn](https://www.linkedin.com/in/michael-minichino/) · "
+                "[Redis](https://redis.io/) · "
+                "[GitHub](https://github.com/mminichino/redis-agent-memory-demo)",
+            )
 
-    # Title + Subtitle
-    gr.HTML("""
-      <div class="hero">
-        <div class="hero-title">Redis Memory Server Demo</div>
-        <p class="hero-sub">
-          This demo shows how Redis Agent Memory Server stores both short and long term memory.
-        </p>
-      </div>
-    """)
+    gr.Markdown(
+        "This demo shows how Redis Agent Memory Server stores both short and long term memory."
+    )
 
-    # Settings
-    with gr.Group(elem_classes=["config-card"]):
-        with gr.Accordion("Session:", open=True):
-            session_box_md = gr.Markdown(session_md({}))
+    gr.Markdown("### Session")
+    session_box_md = gr.Markdown(session_md({}))
 
-    with gr.Row(elem_classes=["chat-window"]):
-        with gr.Column(elem_classes=["card"]):
-            gr.Markdown("<div class='card-title'>Chat with Assistant</div>")
+    with gr.Row():
+        with gr.Column():
+            gr.Markdown("### Chat with Assistant")
             gr.ChatInterface(
                 fn=chat_fn,
-                additional_inputs=[st]
+                additional_inputs=[st],
+                show_progress="hidden",
             )
     
     with gr.Row():
@@ -791,32 +515,24 @@ def render_demo():
     return session_box_md, logout_button
 
 # ============== PASSWORD PROTECTION ==============
-def check_password(password):
-    if password == APP_PASSWORD:
-        return {
-            login_box: gr.update(visible=False),
-            main_app: gr.update(visible=True)
-        }
-    else:
-        return {
-            login_box: gr.update(visible=True),
-            main_app: gr.update(visible=False)
-        }
-
-# Wrap the demo with password protection
 with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
     st = gr.State({"username": "", "ams_url": "", "history": [], "authenticated": False, "session_id": str(uuid.uuid4())})
+    browser_state = gr.BrowserState()
 
-    with gr.Column(visible=True, elem_id="login-container") as login_box:
-        gr.HTML(f"""
-            <div style="max-width: 400px; margin: 100px auto; padding: 40px; background: white; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
-                <div style="text-align: center; margin-bottom: 30px;">
-                    <img src="{LOGO_SRC}" alt="Redis" style="height: 40px; margin: 0 auto 16px; display: block;">
-                    <h2 style="font-family: 'Space Grotesk', sans-serif; color: #0b1220; margin: 0; text-align: center;">Redis LangCache Demo</h2>
-                    <p style="color: #64748b; margin-top: 8px; text-align: center;">Enter the password to access</p>
-                </div>
-            </div>
-        """)
+    with gr.Column(visible=True, variant="compact", elem_classes=["login-overlay"]) as login_box:
+        with gr.Row(elem_classes=["login-logo-row"]):
+            gr.Image(
+                LOGO_SRC,
+                show_label=False,
+                container=False,
+                height=48,
+                width=48,
+                interactive=False,
+            )
+        gr.Markdown(
+            "# Redis LangCache Demo\n\nEnter the password to access.",
+            elem_classes=["login-title-wrap"],
+        )
         with gr.Row():
             gr.HTML("<div style='flex: 1;'></div>")
             with gr.Column(scale=1, min_width=300):
@@ -824,83 +540,117 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
                     label="🏷️ Username",
                     type="text",
                     placeholder="Enter your username",
-                    elem_id="username-input",
                 )
                 password_input = gr.Textbox(
                     label="🔒 Password",
                     type="password",
                     placeholder="Enter password...",
-                    elem_id="password-input"
                 )
                 login_btn = gr.Button("Enter", variant="primary", size="lg")
                 login_status = gr.HTML("")
             gr.HTML("<div style='flex: 1;'></div>")
 
-    with gr.Column(visible=False) as main_app:
+    with gr.Column(visible=True, elem_id="main-app-root"):
         session_box, logout_btn = render_demo()
 
-    # Handle login
     def handle_login(username, password, state, request: gr.Request):
         if password == APP_PASSWORD:
+            session_id = str(uuid.uuid4())
             state["username"] = username
             state["ams_url"] = AGENT_MEMORY_SERVER_URL
             state["authenticated"] = True
-            state["session_id"] = str(uuid.uuid4())
+            state["session_id"] = session_id
+            browser_payload = {
+                "session_id": session_id,
+                "username": username,
+            }
             return (
                 gr.update(visible=False),
-                gr.update(visible=True),
                 "",
                 state,
                 session_md(state),
+                browser_payload,
             )
-        else:
-            client_ip = _get_client_ip(request)
-            logger.warning(f"Failed login attempt from IP: {client_ip}")
-            state["authenticated"] = False
-            return (
-                gr.update(visible=True),
-                gr.update(visible=False),
-                "<p style='color: #ef4444; text-align: center; margin-top: 10px;'>❌ Incorrect password</p>",
-                state,
-                gr.update(),
-            )
+        client_ip = _get_client_ip(request)
+        logger.warning(f"Failed login attempt from IP: {client_ip}")
+        state["authenticated"] = False
+        return (
+            gr.update(visible=True),
+            "<p style='color: #ef4444; text-align: center; margin-top: 10px;'>❌ Incorrect password</p>",
+            state,
+            gr.skip(),
+            gr.skip(),
+        )
 
-    # Handle logout
     def handle_logout(state):
         state["authenticated"] = False
         state["username"] = ""
         state["ams_url"] = ""
         return (
             gr.update(visible=True),
-            gr.update(visible=False),
             "",
             state,
-            gr.update(value=session_md(state)),
+            session_md(state),
+            {"session_id": "", "username": ""},
         )
+
+    # Handle session load
+    def check_session(_browser_state, state):
+        if _browser_state is None:
+            return {
+                login_box: gr.update(visible=True),
+                st: state,
+                session_box: gr.update(),
+            }
+        session_id = _browser_state.get("session_id")
+        username = _browser_state.get("username")
+        
+        if session_id and username:
+            state["username"] = username
+            state["session_id"] = session_id
+            state["ams_url"] = AGENT_MEMORY_SERVER_URL
+            state["authenticated"] = True
+            return {
+                login_box: gr.update(visible=False),
+                st: state,
+                session_box: session_md(state),
+            }
+        return {
+            login_box: gr.update(visible=True),
+            st: state,
+            session_box: gr.update(),
+        }
 
     login_btn.click(
         fn=handle_login,
         inputs=[username_input, password_input, st],
-        outputs=[login_box, main_app, login_status, st, session_box],
+        outputs=[login_box, login_status, st, session_box, browser_state],
         show_progress="hidden",
     )
 
     password_input.submit(
         fn=handle_login,
         inputs=[username_input, password_input, st],
-        outputs=[login_box, main_app, login_status, st, session_box],
+        outputs=[login_box, login_status, st, session_box, browser_state],
         show_progress="hidden",
     )
 
     logout_btn.click(
         fn=handle_logout,
         inputs=[st],
-        outputs=[login_box, main_app, login_status, st, session_box],
+        outputs=[login_box, login_status, st, session_box, browser_state],
+        show_progress="hidden",
+    )
+
+    app.load(
+        fn=check_session,
+        inputs=[browser_state, st],
+        outputs=[login_box, st, session_box],
         show_progress="hidden",
     )
 
 def main():
-    app.launch(css=CUSTOM_CSS)
+    app.launch(theme=theme, css=APP_CSS)
 
 if __name__ == "__main__":
     main()

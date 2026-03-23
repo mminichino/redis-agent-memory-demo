@@ -5,7 +5,7 @@ import logging
 import random
 import redis.asyncio as redis
 from langchain_openai import ChatOpenAI
-from memory_demo.memory_demo import process_user_input, OPENAI_MODEL
+from memory_demo.memory_demo import process_user_input, OPENAI_MODEL, FUNCTION_CALL_COUNTER
 from langchain_core.messages import SystemMessage, HumanMessage
 from typing import Dict, Any
 
@@ -52,7 +52,6 @@ async def run_exercise(user_count: int, question_count: int):
                 session_id = get_new_session_id()
                 typer.echo(f"\n--- Session ID changed to {session_id} ---")
                 messages_until_session_change = random.randint(2, 5)
-                message_counter = 0
             
             question = await generate_message(history)
 
@@ -64,8 +63,10 @@ async def run_exercise(user_count: int, question_count: int):
             message_counter += 1
             progress = (i - 1) * question_count + message_counter
             percentage = progress / iterations
-            typer.echo(f"Progress: {percentage:.0%}")
+            typer.echo(f"Progress: {percentage:.0%} User: {i} ({message_counter} of {question_count})")
             typer.echo("-" * 20)
+    
+    typer.echo(f"Function call counter: {FUNCTION_CALL_COUNTER}")
 
 async def get_redis_memory_stats(redis_url: str) -> Dict[str, Any]:
     client = redis.from_url(redis_url)
