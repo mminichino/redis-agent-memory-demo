@@ -5,9 +5,10 @@ import logging
 import random
 import redis.asyncio as redis
 from langchain_openai import ChatOpenAI
-from memory_demo.memory_demo import process_user_input, OPENAI_MODEL, FUNCTION_CALL_COUNTER
+from memory_demo.memory_demo import process_user_input, OPENAI_MODEL
 from langchain_core.messages import SystemMessage, HumanMessage
 from typing import Dict, Any
+import memory_demo.memory_demo as m
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ async def generate_message(history) -> str:
 
 async def run_exercise(user_count: int, question_count: int):
     iterations = user_count * question_count
+    error_count = 0
     for i in range(1, user_count + 1):
         user_id = f"user{i}"
         
@@ -58,6 +60,7 @@ async def run_exercise(user_count: int, question_count: int):
             typer.echo(f"User (Session: {session_id}): {question}")
             async for response in process_user_input(question, session_id, user_id):
                 if not response:
+                    error_count += 1
                     continue
                 typer.echo(f"Assistant: {response.content}")
 
@@ -68,7 +71,8 @@ async def run_exercise(user_count: int, question_count: int):
             typer.echo(f"Progress: {percentage:.0%} User: {i} ({message_counter} of {question_count})")
             typer.echo("-" * 20)
     
-    typer.echo(f"Function call counter: {FUNCTION_CALL_COUNTER}")
+    typer.echo(f"Generator error count: {error_count}")
+    typer.echo(f"Module error count: {m.ERROR_COUNT}")
 
 async def get_redis_memory_stats(redis_url: str) -> Dict[str, Any]:
     client = redis.from_url(redis_url)

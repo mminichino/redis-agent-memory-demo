@@ -16,6 +16,7 @@ from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from memory_demo import __version__ as app_version
 import logging
+import traceback
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
@@ -26,6 +27,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+error_trace_logger = logging.getLogger(f"{__name__}.error_trace")
+error_trace_logger.setLevel(logging.ERROR)
+error_trace_logger.propagate = False
+if not any(isinstance(h, logging.FileHandler) and h.baseFilename.endswith("debug.log") for h in error_trace_logger.handlers):
+    debug_file_handler = logging.FileHandler("debug.log")
+    debug_file_handler.setLevel(logging.ERROR)
+    debug_file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
+    error_trace_logger.addHandler(debug_file_handler)
 
 # ============== Env & Clients ==============
 load_dotenv()
@@ -41,7 +52,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2-chat-latest")
 AGENT_MEMORY_SERVER_URL = os.getenv("AGENT_MEMORY_SERVER_URL", "http://localhost:8000")
-FUNCTION_CALL_COUNTER = 0
+ERROR_COUNT = 0
 
 SYSTEM_PROMPT = {
     "role": "system",
@@ -168,6 +179,7 @@ APP_CSS = """
 }
 """
 
+
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, MemoryRecord):
@@ -176,17 +188,28 @@ class CustomEncoder(json.JSONEncoder):
             return obj.isoformat()
         return json.JSONEncoder.default(self, obj)
 
+
+def increment_error_count() -> None:
+    global ERROR_COUNT
+    ERROR_COUNT += 1
+    tb_text = traceback.format_exc()
+    error_trace_logger.error(tb_text)
+
+
 async def _get_namespace(user_id: str) -> str:
     return f"demo_agent:{user_id}"
+
 
 def _scoped_tool_arguments(function_name: str, arguments: str, user_id: str) -> str:
     try:
         args = json.loads(arguments) if arguments and str(arguments).strip() else {}
     except (json.JSONDecodeError, TypeError):
+        increment_error_count()
         return arguments if isinstance(arguments, str) else json.dumps(arguments or {})
     if function_name == "search_memory" and user_id:
         args["user_id"] = user_id
     return json.dumps(args)
+
 
 async def _get_working_memory(session_id: str, user_id: str) -> WorkingMemory:
     logger.info(f"Get working memory: {user_id} ({session_id})")
@@ -197,6 +220,7 @@ async def _get_working_memory(session_id: str, user_id: str) -> WorkingMemory:
         model_name="gpt-5.2-chat-latest",
     )
     return WorkingMemory(**result.model_dump())
+
 
 async def _add_message_to_working_memory(session_id: str, user_id: str, role: str, content: str):
     logger.info(f"Add to working memory: {user_id} ({session_id}) {role}")
@@ -212,6 +236,7 @@ async def _add_message_to_working_memory(session_id: str, user_id: str, role: st
         user_id=user_id,
         model_name="gpt-5.2-chat-latest",
     )
+
 
 def _assistant_content_str(msg: Any) -> str:
     """Normalize LangChain AIMessage content for Gradio (str or multimodal list)."""
@@ -260,10 +285,9 @@ async def _search_web(query: str) -> str:
 
         return "\n\n".join(formatted_results)
     except Exception as e:
+        increment_error_count()
         logger.error(f"Error performing web search: {e}")
         return f"Error performing web search: {str(e)}"
-
-_TOOL_PREVIEW_MAX = 1200
 
 
 async def _generate_response(
@@ -307,6 +331,7 @@ async def _generate_response(
                             try:
                                 args_value = json.dumps(args_value)
                             except Exception as e:
+                                increment_error_count()
                                 logger.error(f"Error serializing args: {e}")
                                 args_value = "{}"
                         normalized_calls.append(
@@ -326,6 +351,7 @@ async def _generate_response(
                         try:
                             args = json.dumps(args)
                         except Exception as e:
+                            increment_error_count()
                             logger.error(f"Error serializing tool call args: {e}")
                             args = "{}"
                     normalized_calls.append(
@@ -371,6 +397,7 @@ async def _generate_response(
                             user_id=user_id,
                         )
                 except Exception as e:
+                    increment_error_count()
                     logger.error(f"Tool '{fname}' failed: {e}")
                     res = {"success": False, "error": str(e)}
                 yield ChatMessage(
@@ -398,6 +425,7 @@ async def _generate_response(
             tool_messages: list[dict] = []
             for i, (tc, res) in enumerate(results):
                 if not res.get("success", False):
+                    increment_error_count()
                     content = f"Error calling tool '{tc.get('function', {}).get('name', '')}': {res.get('error')}"
                 else:
                     payload = res.get("result")
@@ -408,6 +436,7 @@ async def _generate_response(
                             else str(res.get("formatted_response", ""))
                         )
                     except Exception as e:
+                        increment_error_count()
                         logger.error(f"Error serializing payload: {e}")
                         content = str(res.get("formatted_response", ""))
                 tool_messages.append(
@@ -435,6 +464,7 @@ async def _generate_response(
                 content=text,
             )
     except Exception as e:
+        increment_error_count()
         logger.error(f"Error generating response: {e}", exc_info=True)
         yield ChatMessage(
             content="I'm sorry, I encountered an error processing your request.",
@@ -459,6 +489,7 @@ async def process_user_input(
                 continue
             yield message
     except Exception as e:
+        increment_error_count()
         logger.exception(f"Error processing user input: {e}")
         yield ChatMessage(
             content="I'm sorry, I encountered an error processing your request."
@@ -610,6 +641,7 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
             )
         client_ip = _get_client_ip(request)
         logger.warning(f"Failed login attempt from IP: {client_ip}")
+        increment_error_count()
         state["authenticated"] = False
         return (
             gr.update(visible=True),
