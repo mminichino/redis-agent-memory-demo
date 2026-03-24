@@ -3,6 +3,26 @@ entries:
   agent-memory-demo:
   - apiVersion: v2
     appVersion: 0.2.0
+    created: "2026-03-24T20:59:54.708649651Z"
+    description: Redis Agent Memory Server Demo
+    digest: 0ce884a631d56de47134d22a3b864e1292633c605b68213e8ed10df6ccb040f3
+    home: https://github.com/mminichino/redis-agent-memory-demo
+    keywords:
+    - agent
+    - memory
+    - redis
+    maintainers:
+    - name: Michael Minichino
+      url: https://github.com/mminichino/redis-agent-memory-demo
+    name: agent-memory-demo
+    sources:
+    - https://github.com/mminichino/redis-agent-memory-demo
+    type: application
+    urls:
+    - https://github.com/mminichino/redis-agent-memory-demo/releases/download/agent-memory-demo-0.2.4/agent-memory-demo-0.2.4.tgz
+    version: 0.2.4
+  - apiVersion: v2
+    appVersion: 0.2.0
     created: "2026-03-24T19:56:20.834762511Z"
     description: Redis Agent Memory Server Demo
     digest: 8419cfc468b5c0fb3c26bc33aa9795492da993487b757f4aea405333ce758fe4
@@ -184,6 +204,26 @@ entries:
   agent-memory-server:
   - apiVersion: v2
     appVersion: 0.14.0
+    created: "2026-03-24T20:59:54.884614182Z"
+    description: Redis Agent Memory Server
+    digest: 24c066f7496206f7c1d55647ba97197b3012fd853b2d722a771abfff734a1a01
+    home: https://redis.github.io/agent-memory-server/
+    keywords:
+    - agent
+    - memory
+    - redis
+    maintainers:
+    - name: Redis Labs
+      url: https://redis.io
+    name: agent-memory-server
+    sources:
+    - https://github.com/redis/agent-memory-server
+    type: application
+    urls:
+    - https://github.com/mminichino/redis-agent-memory-demo/releases/download/agent-memory-server-0.2.1/agent-memory-server-0.2.1.tgz
+    version: 0.2.1
+  - apiVersion: v2
+    appVersion: 0.14.0
     created: "2026-03-17T17:35:09.073540262Z"
     description: Redis Agent Memory Server
     digest: dac95d1869ee50e70e8db1e50f515ff11a82bc9883a1ce2411de83518ea020ca
@@ -262,4 +302,4 @@ entries:
     urls:
     - https://github.com/mminichino/redis-agent-memory-demo/releases/download/agent-memory-server-0.1.0/agent-memory-server-0.1.0.tgz
     version: 0.1.0
-generated: "2026-03-24T19:56:20.834805952Z"
+generated: "2026-03-24T20:59:54.884675506Z"
