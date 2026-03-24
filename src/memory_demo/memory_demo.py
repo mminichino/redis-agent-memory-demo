@@ -2,8 +2,11 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from typing import Optional, AsyncGenerator
+import time
+from typing import Optional, AsyncGenerator, Any
 import gradio as gr
+from gradio import ChatMessage
+from gradio.components.chatbot import MetadataDict
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from pathlib import Path
@@ -210,6 +213,24 @@ async def _add_message_to_working_memory(session_id: str, user_id: str, role: st
         model_name="gpt-5.2-chat-latest",
     )
 
+def _assistant_content_str(msg: Any) -> str:
+    """Normalize LangChain AIMessage content for Gradio (str or multimodal list)."""
+    c = getattr(msg, "content", None)
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts: list[str] = []
+        for block in c:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and "text" in block:
+                parts.append(str(block["text"]))
+            else:
+                parts.append(str(block))
+        return "".join(parts)
+    return str(c) if c is not None else ""
+
+
 async def _search_web(query: str) -> str:
     try:
         logger.info(f"Searching the web for: {query}")
@@ -242,12 +263,15 @@ async def _search_web(query: str) -> str:
         logger.error(f"Error performing web search: {e}")
         return f"Error performing web search: {str(e)}"
 
+_TOOL_PREVIEW_MAX = 1200
+
+
 async def _generate_response(
         session_id: str,
         user_id: str,
         context_messages: Optional[list[dict[str, str]]],
         iteration: Optional[int] = 1,
-) -> AsyncGenerator[dict[str, str] | str]:
+) -> AsyncGenerator[ChatMessage]:
     logger.info(f"Generate: {user_id} ({session_id}) iteration {iteration} with {len(context_messages)} messages")
     try:
         current_message = context_messages[-1]
@@ -319,10 +343,7 @@ async def _generate_response(
             logger.debug(f"Normalized tool calls:\n{json.dumps(normalized_calls, indent=2)}")
             for call in normalized_calls:
                 fname = call.get("function", {}).get("name", "")
-                yield {
-                    "role": "assistant",
-                    "content": f"Calling tool: {fname}..."
-                }
+                start_time = time.time()
                 try:
                     logger.info(f"Calling tool: {fname}")
                     if fname == "web_search":
@@ -352,6 +373,15 @@ async def _generate_response(
                 except Exception as e:
                     logger.error(f"Tool '{fname}' failed: {e}")
                     res = {"success": False, "error": str(e)}
+                yield ChatMessage(
+                    content="",
+                    metadata=MetadataDict(
+                        title=f"Called tool {fname}",
+                        id=0,
+                        status="done",
+                        duration=time.time() - start_time
+                    )
+                )
                 results.append((call, res))
 
             for i, (tc, res) in enumerate(results):
@@ -397,22 +427,24 @@ async def _generate_response(
             async for resp in _generate_response(session_id, user_id, messages, iteration + 1):
                 yield resp
         elif response.content is not None:
+            text = _assistant_content_str(response)
             await _add_message_to_working_memory(
-                session_id, user_id, "assistant", str(response.content)
+                session_id, user_id, "assistant", text
             )
-            yield response.model_dump()
+            yield ChatMessage(
+                content=text,
+            )
     except Exception as e:
         logger.error(f"Error generating response: {e}", exc_info=True)
-        yield {
-            "role": "assistant",
-            "content": "I'm sorry, I encountered an error processing your request."
-        }
+        yield ChatMessage(
+            content="I'm sorry, I encountered an error processing your request.",
+        )
 
 async def process_user_input(
         user_input: str,
         session_id: str,
         user_id: str,
-) -> AsyncGenerator[dict[str, str] | str]:
+) -> AsyncGenerator[ChatMessage]:
     logger.info(f"Process user input: user {user_id}: session {session_id}: message {user_input}")
     try:
         working_memory = await _get_working_memory(session_id, user_id)
@@ -420,16 +452,17 @@ async def process_user_input(
         context_messages.insert(0, SYSTEM_PROMPT)
         context_messages.append({"role": "user", "content": user_input})
 
-        async for response in _generate_response(
+        async for message in _generate_response(
             session_id, user_id, context_messages
         ):
-            yield response
+            if not message:
+                continue
+            yield message
     except Exception as e:
         logger.exception(f"Error processing user input: {e}")
-        yield {
-            "role": "assistant",
-            "content": "I'm sorry, I encountered an error processing your request."
-        }
+        yield ChatMessage(
+            content="I'm sorry, I encountered an error processing your request."
+        )
 
 def _get_client_ip(request: gr.Request | None) -> str:
     if request is None:
@@ -452,8 +485,10 @@ async def chat_fn(message, _, state):
     user_id = state.get("username", "guest")
     session_id = state.get("session_id", "guest")
     logger.info(f"Chat: user {user_id}: session {session_id}: message {message}")
-    async for response in process_user_input(message, session_id, user_id):
-        yield response
+    messages: list[ChatMessage] = []
+    async for message in process_user_input(message, session_id, user_id):
+        messages.append(message)
+        yield messages
 
 def session_md(state):
     username = state.get("username", "Guest")
@@ -477,6 +512,7 @@ def render_demo():
                 height=56,
                 width=56,
                 interactive=False,
+                buttons=[],
             )
         with gr.Column(scale=1, min_width=0, elem_classes=["app-header-title"]):
             gr.Markdown(
@@ -501,6 +537,7 @@ def render_demo():
             gr.Markdown("### Chat with Assistant")
             gr.ChatInterface(
                 fn=chat_fn,
+                chatbot=gr.Chatbot(height=600),
                 additional_inputs=[st],
                 show_progress="hidden",
             )
@@ -527,6 +564,7 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
                 height=48,
                 width=48,
                 interactive=False,
+                buttons=[],
             )
         gr.Markdown(
             "# Redis LangCache Demo\n\nEnter the password to access.",
