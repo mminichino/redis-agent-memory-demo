@@ -42,4 +42,3 @@ externalSecret:
     openai: "openai-api-key"
     tavily: "tavily-api-key"
     password: "demo-ui-password"
-    redis: "redis-password"
