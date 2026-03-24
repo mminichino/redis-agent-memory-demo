@@ -20,12 +20,21 @@ secrets:
 dns:
   domain: ""
 
+ingress:
+  enabled: true
+  type: "haproxy"
+  username: "redis"
+  password: "password"
+
+tls:
+  enabled: true
+  secretName: agent-memory-demo-tls
+
 externalSecret:
-  enabled: false
+  enabled: true
   store:
     kind: ClusterSecretStore
     name: "secret-store"
   keys:
     openai: "openai-api-key"
     tavily: "tavily-api-key"
-    password: "agent-memory-demo-password"
