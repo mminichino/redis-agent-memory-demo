@@ -22,7 +22,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secrets.url }}
-                  key: redis.url
+                  key: AGENT_MEMORY_SERVER_URL
             - name: TAVILY_API_KEY
               valueFrom:
                 secretKeyRef:

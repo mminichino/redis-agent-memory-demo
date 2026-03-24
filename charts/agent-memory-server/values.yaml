@@ -19,16 +19,20 @@ model:
 redis:
   secretName: redis-url-secret
   url: "redis://localhost:6379"
+  prefix: "redis+cluster"
+  service: "redb"
+  namespace: ""
+  port: 12000
 
 openai:
   secretName: openai-api-key-secret
   key: ""
 
 externalSecret:
-  enabled: false
+  enabled: true
   store:
     kind: ClusterSecretStore
     name: "secret-store"
   keys:
-    redis: "redis-url-key"
     openai: "openai-api-key"
+    password: "redis-db-password-key"

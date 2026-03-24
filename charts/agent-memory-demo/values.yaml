@@ -6,11 +6,9 @@ replicaCount: 1
 password: ""
 
 server:
-  prefix: "redis+cluster"
-  url: ""
-  service: "redb"
-  namespace: "redis"
-  port: 12000
+  service: "agent-memory-server"
+  namespace: ""
+  port: 8000
 
 keys:
   openai: ""
@@ -20,7 +18,7 @@ secrets:
   openai: "openai-api-key-demo-secret"
   tavily: "tavily-api-key-demo-secret"
   password: "agent-memory-demo-password"
-  url: "agent-memory-demo-redis-url"
+  url: "agent-memory-server-url"
 
 dns:
   domain: ""
