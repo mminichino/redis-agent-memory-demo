@@ -33,11 +33,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.openai }}
                   key: OPENAI_API_KEY
-            - name: APP_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.secrets.password }}
-                  key: APP_PASSWORD
           ports:
             - name: http
               containerPort: 7860
