@@ -19,7 +19,10 @@ spec:
           imagePullPolicy: Always
           env:
             - name: AGENT_MEMORY_SERVER_URL
-              value: {{ .Values.server.url | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.url }}
+                  key: redis.url
             - name: TAVILY_API_KEY
               valueFrom:
                 secretKeyRef:
