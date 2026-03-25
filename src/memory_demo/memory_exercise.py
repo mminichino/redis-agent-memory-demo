@@ -92,12 +92,61 @@ async def get_redis_memory_stats(redis_url: str) -> Dict[str, Any]:
                     total_memory += usage
             return count, total_memory
 
-        (memory_idx_count, memory_idx_usage), (
-            working_memory_count,
-            working_memory_usage,
+        async def memory_idx_hash_vector_stats() -> Dict[str, Any]:
+            def _to_str(value: Any) -> str:
+                if isinstance(value, bytes):
+                    return value.decode("utf-8", errors="replace")
+                return str(value)
+
+            total_hash_count = 0
+            total_hash_bytes = 0
+            with_vector_count = 0
+            with_vector_bytes = 0
+            without_vector_count = 0
+            without_vector_bytes = 0
+
+            async for key in client.scan_iter(match="memory_idx:*", count=1000):
+                key_type = _to_str(await client.type(key)).lower()
+                if key_type != "hash":
+                    continue
+
+                total_hash_count += 1
+                usage = await client.memory_usage(key)
+                key_usage = int(usage or 0)
+                total_hash_bytes += key_usage
+
+                has_vector = await client.hexists(key, "vector")
+                if has_vector:
+                    with_vector_count += 1
+                    with_vector_bytes += key_usage
+                else:
+                    without_vector_count += 1
+                    without_vector_bytes += key_usage
+
+            count_divisor = total_hash_count or 1
+            bytes_divisor = total_hash_bytes or 1
+
+            return {
+                "memory_idx_hash_total_count": total_hash_count,
+                "memory_idx_hash_total_bytes": total_hash_bytes,
+                "memory_idx_hash_with_vector_count": with_vector_count,
+                "memory_idx_hash_with_vector_bytes": with_vector_bytes,
+                "memory_idx_hash_with_vector_count_pct": (with_vector_count / count_divisor) * 100,
+                "memory_idx_hash_with_vector_bytes_pct": (with_vector_bytes / bytes_divisor) * 100,
+                "memory_idx_hash_without_vector_count": without_vector_count,
+                "memory_idx_hash_without_vector_bytes": without_vector_bytes,
+                "memory_idx_hash_without_vector_count_pct": (without_vector_count / count_divisor) * 100,
+                "memory_idx_hash_without_vector_bytes_pct": (without_vector_bytes / bytes_divisor) * 100,
+            }
+
+        (
+            (memory_idx_count, memory_idx_usage),
+            (working_memory_count, working_memory_usage),
+            memory_idx_vector_stats,
         ) = await asyncio.gather(
             pattern_stats("memory_idx:*"),
             pattern_stats("working_memory:demo_agent:*"),
+            memory_idx_hash_vector_stats(),
         )
 
         return {
@@ -107,6 +156,7 @@ async def get_redis_memory_stats(redis_url: str) -> Dict[str, Any]:
             "memory_idx_bytes": memory_idx_usage,
             "working_memory_key_count": working_memory_count,
             "working_memory_bytes": working_memory_usage,
+            **memory_idx_vector_stats,
         }
     finally:
         await client.aclose()
@@ -122,7 +172,7 @@ def main(
         typer.echo("Summary of Redis Memory Usage:")
         stats = asyncio.run(get_redis_memory_stats(redis_url))
         for key, value in stats.items():
-            typer.echo(f"{key}: {value} bytes")
+            typer.echo(f"{key}: {value}")
         return
 
     typer.echo(f"Running Dynamic Memory Exercise with {users} users and {questions} questions each")
