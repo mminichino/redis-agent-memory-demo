@@ -1,9 +1,12 @@
+from __future__ import annotations
 import asyncio
+import json
 import uuid
 import typer
 import logging
 import random
 import redis.asyncio as redis
+from redis.exceptions import ResponseError
 from langchain_openai import ChatOpenAI
 from memory_demo.memory_demo import process_user_input, OPENAI_MODEL
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -104,6 +107,8 @@ async def get_redis_memory_stats(redis_url: str) -> Dict[str, Any]:
             with_vector_bytes = 0
             without_vector_count = 0
             without_vector_bytes = 0
+            hash_with_text_field_count = 0
+            hash_text_total_chars = 0
 
             async for key in client.scan_iter(match="memory_idx:*", count=1000):
                 key_type = _to_str(await client.type(key)).lower()
@@ -123,9 +128,14 @@ async def get_redis_memory_stats(redis_url: str) -> Dict[str, Any]:
                     without_vector_count += 1
                     without_vector_bytes += key_usage
 
+                if await client.hexists(key, "text"):
+                    raw_text = await client.hget(key, "text")
+                    text_val = _to_str(raw_text) if raw_text is not None else ""
+                    hash_with_text_field_count += 1
+                    hash_text_total_chars += len(text_val)
+
             count_divisor = total_hash_count or 1
             bytes_divisor = total_hash_bytes or 1
-
             return {
                 "memory_idx_hash_total_count": total_hash_count,
                 "memory_idx_hash_total_bytes": total_hash_bytes,
@@ -137,16 +147,115 @@ async def get_redis_memory_stats(redis_url: str) -> Dict[str, Any]:
                 "memory_idx_hash_without_vector_bytes": without_vector_bytes,
                 "memory_idx_hash_without_vector_count_pct": (without_vector_count / count_divisor) * 100,
                 "memory_idx_hash_without_vector_bytes_pct": (without_vector_bytes / bytes_divisor) * 100,
+                "memory_idx_hash_with_text_field_count": hash_with_text_field_count,
+                "memory_idx_hash_text_total_chars": hash_text_total_chars,
+                "memory_idx_hash_text_avg_chars_per_key": (
+                    hash_text_total_chars / hash_with_text_field_count
+                    if hash_with_text_field_count
+                    else 0
+                ),
+            }
+
+        async def working_memory_memories_text_stats() -> Dict[str, Any]:
+            def _to_str(value: Any) -> str:
+                if isinstance(value, bytes):
+                    return value.decode("utf-8", errors="replace")
+                return str(value)
+
+            def _normalize_json_root(payload: Any) -> dict[str, Any] | None:
+                if isinstance(payload, dict):
+                    return payload
+                if (
+                    isinstance(payload, list)
+                    and len(payload) == 1
+                    and isinstance(payload[0], dict)
+                ):
+                    return payload[0]
+                return None
+
+            redis_key_count = 0
+            loaded_from_string_count = 0
+            loaded_from_redisjson_count = 0
+            json_parse_error_count = 0
+            redisjson_get_error_count = 0
+            memories_text_item_count = 0
+            memories_text_total_chars = 0
+
+            async for key in client.scan_iter(match="working_memory:*", count=1000):
+                redis_key_count += 1
+                key_type = _to_str(await client.type(key)).lower()
+                data: dict[str, Any] | None = None
+
+                if key_type == "string":
+                    raw = await client.get(key)
+                    if raw is not None:
+                        try:
+                            parsed = json.loads(_to_str(raw))
+                            data = _normalize_json_root(parsed)
+                            if data is not None:
+                                loaded_from_string_count += 1
+                            else:
+                                json_parse_error_count += 1
+                        except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+                            json_parse_error_count += 1
+
+                if data is None:
+                    try:
+                        payload = await client.json().get(key)
+                    except ResponseError:
+                        redisjson_get_error_count += 1
+                        payload = None
+                    if payload is not None:
+                        data = _normalize_json_root(payload)
+                        if data is not None:
+                            loaded_from_redisjson_count += 1
+
+                if data is None:
+                    continue
+
+                memories = data.get("memories")
+                if not isinstance(memories, list):
+                    continue
+
+                for obj in memories:
+                    if not isinstance(obj, dict):
+                        continue
+                    if "text" not in obj:
+                        continue
+                    txt = obj.get("text")
+                    if not isinstance(txt, str):
+                        continue
+                    memories_text_item_count += 1
+                    memories_text_total_chars += len(txt)
+
+            return {
+                "working_memory_keyspace_key_count": redis_key_count,
+                "working_memory_loaded_via_string_json_count": loaded_from_string_count,
+                "working_memory_loaded_via_redisjson_get_count": loaded_from_redisjson_count,
+                "working_memory_string_json_decode_error_count": json_parse_error_count,
+                "working_memory_redisjson_get_error_count": redisjson_get_error_count,
+                "working_memory_memories_text_item_count": memories_text_item_count,
+                "working_memory_memories_text_total_chars": memories_text_total_chars,
+                "working_memory_memories_text_avg_chars_per_memory_item": (
+                    memories_text_total_chars / memories_text_item_count
+                    if memories_text_item_count
+                    else 0
+                ),
+                "working_memory_memories_text_avg_chars_per_redis_key": (
+                    memories_text_total_chars / redis_key_count if redis_key_count else 0
+                ),
             }
 
         (
             (memory_idx_count, memory_idx_usage),
             (working_memory_count, working_memory_usage),
             memory_idx_vector_stats,
+            wm_memories_text_stats,
         ) = await asyncio.gather(
             pattern_stats("memory_idx:*"),
             pattern_stats("working_memory:demo_agent:*"),
             memory_idx_hash_vector_stats(),
+            working_memory_memories_text_stats(),
         )
 
         return {
@@ -157,6 +266,7 @@ async def get_redis_memory_stats(redis_url: str) -> Dict[str, Any]:
             "working_memory_key_count": working_memory_count,
             "working_memory_bytes": working_memory_usage,
             **memory_idx_vector_stats,
+            **wm_memories_text_stats,
         }
     finally:
         await client.aclose()
