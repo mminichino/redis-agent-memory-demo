@@ -1,22 +1,13 @@
 from __future__ import annotations
-import json
 import os
 import uuid
-import time
-from typing import Optional, AsyncGenerator, Any
 import gradio as gr
 from gradio import ChatMessage
-from gradio.components.chatbot import MetadataDict
-from datetime import datetime, timezone
 from dotenv import load_dotenv
 from pathlib import Path
-from agent_memory_client import MemoryAPIClient, MemoryClientConfig
-from agent_memory_client.models import WorkingMemory, MemoryRecord, MemoryMessage
-from langchain_openai import ChatOpenAI
-from langchain_tavily import TavilySearch
+from memory_demo.driver import ChatWithMemory
 from memory_demo import __version__ as app_version
 import logging
-import traceback
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
@@ -48,94 +39,9 @@ if "APP_PASSWORD" in os.environ:
 else:
     APP_PASSWORD = "password"
 logger.info(f"APP_PASSWORD: {APP_PASSWORD}")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2-chat-latest")
-AGENT_MEMORY_SERVER_URL = os.getenv("AGENT_MEMORY_SERVER_URL", "http://localhost:8000")
-ERROR_COUNT = 0
 
-SYSTEM_PROMPT = {
-    "role": "system",
-    "content": """
-    You are a helpful assistant with access to web search and memory tools.
-
-    ## Primary goal
-    Answer the user's question clearly and directly.
-
-    ## Tool-use policy
-    - Use `web_search` for current, live, recent, or time-sensitive information.
-    - Use memory tools for stored user preferences, prior conversation context, or session-specific data.
-    - If the question depends on freshness, prefer `web_search` instead of guessing.
-    - If the question depends on memory, use the appropriate memory tool instead of asking the user to repeat themselves.
-    - When a tool is needed, call it rather than answering from unsupported assumptions.
-
-    ## User isolation
-    All memory tools apply only to the current logged-in user. Do not pass a different user_id in tool arguments.
-
-    ## Long Term Memory policy
-    Store preferences or profile information as semantic records in long term memory.
-    - durable preferences
-    - stable traits
-    Store episodic facts and time-bound knowledge as episodic records in long term memory.
-    - user defaults
-    - scheduled or recurring events
-    - important episodic facts
-    
-    Do not store trivial, temporary, or low-value details.
-    
-    ## Response style
-    - Answer the user's actual question first and directly
-    - When someone shares information acknowledge it naturally, don't give advice or suggestions unless they ask
-    - Be conversational and natural - respond to what the user actually says
-    - When sharing memories, simply state what you remember rather than turning it into advice
-    - Only offer suggestions, recommendations, or tips if the user explicitly asks for them
-    - If someone shares a preference, respond like a friend would, don't launch into advice
-
-    ## Output behavior
-    - Prefer tool calls over guessing when external or stored information is needed.
-    - Use the result of the tool call to formulate the final answer.
-    """,
-    "created_at": datetime.now(timezone.utc).isoformat(),
-}
-
-if "TAVILY_API_KEY" not in os.environ:
-    logger.warning("TAVILY_API_KEY not found in environment. Web search will fail.")
-
-web_search_function = {
-    "name": "web_search",
-    "description": """
-              Search the web for current information. Use this when you need up-to-date information that may
-              not be in your training data.
-            """,
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "The search query to find relevant information",
-            }
-        },
-        "required": ["query"],
-    },
-}
-
-available_functions = [web_search_function]
-
-memory_client_config = MemoryClientConfig(
-    base_url=AGENT_MEMORY_SERVER_URL
-)
-memory_client = MemoryAPIClient(memory_client_config)
-memory_tool_schemas = MemoryAPIClient.get_all_memory_tool_schemas()
-for tool_schema in memory_tool_schemas:
-    available_functions.append(tool_schema["function"])
-
-logger.info(
-    f"Available memory tools: {[tool['function']['name'] for tool in memory_tool_schemas]}"
-)
-
-llm = ChatOpenAI(model=OPENAI_MODEL).bind_tools(
-    available_functions
-)
+ams_server_url = os.getenv("AGENT_MEMORY_SERVER_URL", "http://localhost:8000")
+chat = ChatWithMemory(ams_url=ams_server_url, namespace="demo")
 
 # ===================== THEME =====================
 theme = gr.themes.Soft(
@@ -179,322 +85,6 @@ APP_CSS = """
 }
 """
 
-
-class CustomEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, MemoryRecord):
-            return obj.model_dump()
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        return json.JSONEncoder.default(self, obj)
-
-
-def increment_error_count() -> None:
-    global ERROR_COUNT
-    ERROR_COUNT += 1
-    tb_text = traceback.format_exc()
-    error_trace_logger.error(tb_text)
-
-
-async def _get_namespace(user_id: str) -> str:
-    return f"demo_agent:{user_id}"
-
-
-def _scoped_tool_arguments(function_name: str, arguments: str, user_id: str) -> str:
-    try:
-        args = json.loads(arguments) if arguments and str(arguments).strip() else {}
-    except (json.JSONDecodeError, TypeError):
-        increment_error_count()
-        return arguments if isinstance(arguments, str) else json.dumps(arguments or {})
-    if function_name == "search_memory" and user_id:
-        args["user_id"] = user_id
-    return json.dumps(args)
-
-
-async def _get_working_memory(session_id: str, user_id: str) -> WorkingMemory:
-    logger.info(f"Get working memory: {user_id} ({session_id})")
-    created, result = await memory_client.get_or_create_working_memory(
-        session_id=session_id,
-        user_id=user_id,
-        namespace=await _get_namespace(user_id),
-        model_name="gpt-5.2-chat-latest",
-    )
-    return WorkingMemory(**result.model_dump())
-
-
-async def _add_message_to_working_memory(session_id: str, user_id: str, role: str, content: str):
-    logger.info(f"Add to working memory: {user_id} ({session_id}) {role}")
-    new_message = MemoryMessage(
-        role=role,
-        content=content,
-        created_at=datetime.now(timezone.utc)
-    )
-    await memory_client.append_messages_to_working_memory(
-        session_id=session_id,
-        messages=[new_message],
-        namespace=await _get_namespace(user_id),
-        user_id=user_id,
-        model_name="gpt-5.2-chat-latest",
-    )
-
-
-def _assistant_content_str(msg: Any) -> str:
-    """Normalize LangChain AIMessage content for Gradio (str or multimodal list)."""
-    c = getattr(msg, "content", None)
-    if isinstance(c, str):
-        return c
-    if isinstance(c, list):
-        parts: list[str] = []
-        for block in c:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict) and "text" in block:
-                parts.append(str(block["text"]))
-            else:
-                parts.append(str(block))
-        return "".join(parts)
-    return str(c) if c is not None else ""
-
-
-async def _search_web(query: str) -> str:
-    try:
-        logger.info(f"Searching the web for: {query}")
-        tool = TavilySearch(max_results=3)
-        response = tool.invoke(query)
-        if isinstance(response, str):
-            return response
-
-        if isinstance(response, dict):
-            results = response.get("results", [])
-        elif isinstance(response, list):
-            results = response
-        else:
-            results = []
-
-        formatted_results = []
-        for result in results:
-            if not isinstance(result, dict):
-                continue
-            title = result.get("title", "No title")
-            content = result.get("content", "No content")
-            url = result.get("url", "No URL")
-            formatted_results.append(f"**{title}**\n{content}\nSource: {url}")
-
-        if not formatted_results:
-            return "No relevant search results found."
-
-        return "\n\n".join(formatted_results)
-    except Exception as e:
-        increment_error_count()
-        logger.error(f"Error performing web search: {e}")
-        return f"Error performing web search: {str(e)}"
-
-
-async def _generate_response(
-        session_id: str,
-        user_id: str,
-        context_messages: Optional[list[dict[str, str]]],
-        iteration: Optional[int] = 1,
-) -> AsyncGenerator[ChatMessage]:
-    logger.info(f"Generate: {user_id} ({session_id}) iteration {iteration} with {len(context_messages)} messages")
-    try:
-        current_message = context_messages[-1]
-        msg_role = current_message.get("role", "none")
-        msg_content = current_message.get("content", "")
-        logger.info(f"Role: {msg_role}")
-        if current_message.get('role') == "user":
-            logger.info(f"Content: {msg_content}")
-            await _add_message_to_working_memory(
-                session_id, user_id, "user", msg_content
-            )
-
-        response = llm.invoke(context_messages)
-
-        tool_calls = getattr(response, "tool_calls", [])
-        logger.debug(f"Tools to call:\n{json.dumps(tool_calls, indent=2)}")
-
-        if not tool_calls and hasattr(response, "additional_kwargs"):
-            tool_calls = response.additional_kwargs.get("tool_calls", [])
-
-        if tool_calls and len(tool_calls) > 0:
-            normalized_calls: list[dict] = []
-            for idx, tc in enumerate(tool_calls):
-                if isinstance(tc, dict):
-                    if tc.get("type") == "function" and "function" in tc:
-                        normalized_calls.append(tc)
-                    else:
-                        name = tc.get("function", {}).get("name", tc.get("name", ""))
-                        args_value = tc.get("function", {}).get(
-                            "arguments", tc.get("args", {})
-                        )
-                        if not isinstance(args_value, str):
-                            try:
-                                args_value = json.dumps(args_value)
-                            except Exception as e:
-                                increment_error_count()
-                                logger.error(f"Error serializing args: {e}")
-                                args_value = "{}"
-                        normalized_calls.append(
-                            {
-                                "id": tc.get("id", f"tool_call_{idx}"),
-                                "type": "function",
-                                "function": {
-                                    "name": name,
-                                    "arguments": args_value,
-                                },
-                            }
-                        )
-                else:
-                    name = getattr(tc, "name", "")
-                    args = getattr(tc, "args", {})
-                    if not isinstance(args, str):
-                        try:
-                            args = json.dumps(args)
-                        except Exception as e:
-                            increment_error_count()
-                            logger.error(f"Error serializing tool call args: {e}")
-                            args = "{}"
-                    normalized_calls.append(
-                        {
-                            "id": getattr(tc, "id", f"tool_call_{idx}"),
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": args,
-                            },
-                        }
-                    )
-
-            results = []
-            logger.debug(f"Normalized tool calls:\n{json.dumps(normalized_calls, indent=2)}")
-            for call in normalized_calls:
-                fname = call.get("function", {}).get("name", "")
-                start_time = time.time()
-                try:
-                    logger.info(f"Calling tool: {fname}")
-                    if fname == "web_search":
-                        args = json.loads(call.get("function", {}).get("arguments", "{}"))
-                        res_content = await _search_web(args.get("query", ""))
-                        res = {
-                            "success": True,
-                            "function_name": fname,
-                            "result": res_content,
-                            "formatted_response": res_content
-                        }
-                    else:
-                        raw_args = call.get("function", {}).get("arguments", "{}")
-                        if isinstance(raw_args, dict):
-                            raw_args = json.dumps(raw_args)
-                        res = await memory_client.resolve_tool_call(
-                            tool_call={
-                                "name": fname,
-                                "arguments": _scoped_tool_arguments(
-                                    fname, raw_args, user_id
-                                ),
-                            },
-                            session_id=session_id,
-                            namespace=await _get_namespace(user_id),
-                            user_id=user_id,
-                        )
-                except Exception as e:
-                    increment_error_count()
-                    logger.error(f"Tool '{fname}' failed: {e}")
-                    res = {"success": False, "error": str(e)}
-                yield ChatMessage(
-                    content="",
-                    metadata=MetadataDict(
-                        title=f"Called tool {fname}",
-                        id=0,
-                        status="done",
-                        duration=time.time() - start_time
-                    )
-                )
-                results.append((call, res))
-
-            for i, (tc, res) in enumerate(results):
-                logger.info(f"Tool {res.get('function_name', 'unknown')} success: {res.get('success', False)}")
-                logger.debug(f"Tool calls result #{i}:\n{json.dumps(res, cls=CustomEncoder, indent=2)}")
-
-            assistant_tools_msg = {
-                "role": "assistant",
-                "content": response.content or "",
-                "tool_calls": normalized_calls,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-
-            tool_messages: list[dict] = []
-            for i, (tc, res) in enumerate(results):
-                if not res.get("success", False):
-                    increment_error_count()
-                    content = f"Error calling tool '{tc.get('function', {}).get('name', '')}': {res.get('error')}"
-                else:
-                    payload = res.get("result")
-                    try:
-                        content = (
-                            json.dumps(payload, cls=CustomEncoder)
-                            if isinstance(payload, (dict, list))
-                            else str(res.get("formatted_response", ""))
-                        )
-                    except Exception as e:
-                        increment_error_count()
-                        logger.error(f"Error serializing payload: {e}")
-                        content = str(res.get("formatted_response", ""))
-                tool_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.get("id", f"tool_call_{i}"),
-                        "name": tc.get("function", {}).get("name", ""),
-                        "content": content,
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-
-            messages = (
-                    context_messages + [assistant_tools_msg] + tool_messages
-            )
-
-            async for resp in _generate_response(session_id, user_id, messages, iteration + 1):
-                yield resp
-        elif response.content is not None:
-            text = _assistant_content_str(response)
-            await _add_message_to_working_memory(
-                session_id, user_id, "assistant", text
-            )
-            yield ChatMessage(
-                content=text,
-            )
-    except Exception as e:
-        increment_error_count()
-        logger.error(f"Error generating response: {e}", exc_info=True)
-        yield ChatMessage(
-            content="I'm sorry, I encountered an error processing your request.",
-        )
-
-async def process_user_input(
-        user_input: str,
-        session_id: str,
-        user_id: str,
-) -> AsyncGenerator[ChatMessage]:
-    logger.info(f"Process user input: user {user_id}: session {session_id}: message {user_input}")
-    try:
-        working_memory = await _get_working_memory(session_id, user_id)
-        context_messages: list[dict[str, str]] = [msg.model_dump(include={'role', 'content'}) for msg in working_memory.messages]
-        context_messages.insert(0, SYSTEM_PROMPT)
-        context_messages.append({"role": "user", "content": user_input})
-
-        async for message in _generate_response(
-            session_id, user_id, context_messages
-        ):
-            if not message:
-                continue
-            yield message
-    except Exception as e:
-        increment_error_count()
-        logger.exception(f"Error processing user input: {e}")
-        yield ChatMessage(
-            content="I'm sorry, I encountered an error processing your request."
-        )
-
 def _get_client_ip(request: gr.Request | None) -> str:
     if request is None:
         return "unknown"
@@ -512,13 +102,19 @@ def _get_client_ip(request: gr.Request | None) -> str:
 
     return "unknown"
 
-async def chat_fn(message, _, state):
+def chat_fn(message, _, state):
     user_id = state.get("username", "guest")
     session_id = state.get("session_id", "guest")
     logger.info(f"Chat: user {user_id}: session {session_id}: message {message}")
     messages: list[ChatMessage] = []
-    async for message in process_user_input(message, session_id, user_id):
-        messages.append(message)
+    for msg in chat.process_input(message, session_id, user_id):
+        if msg.type == "ai":
+            chat_message = ChatMessage(role="assistant", content=msg.content or "")
+        elif msg.type == "tool":
+            chat_message = ChatMessage(role="system", content=f"Called tool: {msg.name}")
+        else:
+            continue
+        messages.append(chat_message)
         yield messages
 
 def session_md(state):
@@ -625,7 +221,7 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
         if password == APP_PASSWORD:
             session_id = str(uuid.uuid4())
             state["username"] = username
-            state["ams_url"] = AGENT_MEMORY_SERVER_URL
+            state["ams_url"] = ams_server_url
             state["authenticated"] = True
             state["session_id"] = session_id
             browser_payload = {
@@ -641,7 +237,6 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
             )
         client_ip = _get_client_ip(request)
         logger.warning(f"Failed login attempt from IP: {client_ip}")
-        increment_error_count()
         state["authenticated"] = False
         return (
             gr.update(visible=True),
@@ -677,7 +272,7 @@ with gr.Blocks(title="Redis Agent Memory Server Demo") as app:
         if session_id and username:
             state["username"] = username
             state["session_id"] = session_id
-            state["ams_url"] = AGENT_MEMORY_SERVER_URL
+            state["ams_url"] = ams_server_url
             state["authenticated"] = True
             return {
                 login_box: gr.update(visible=False),

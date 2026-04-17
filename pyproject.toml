@@ -4,6 +4,8 @@ dynamic = ["version"]
 description = "Redis Agent Memory Server Demo"
 requires-python = ">=3.12"
 dependencies = [
+    "grpcio>=1.80.0",
+    "protobuf>=5.0.0",
     "gradio>=6.9.0",
     "dotenv>=0.9.9",
     "openai>=2.26.0",
@@ -22,6 +24,7 @@ dependencies = [
 
 [project.scripts]
 memory_demo = "memory_demo.memory_demo:main"
+memory_demo_grpc = "memory_demo.grpc_chat:main"
 memory_exercise = "memory_demo.memory_exercise:app"
 
 [dependency-groups]
@@ -32,6 +35,7 @@ test = [
     "pytest-mock>=3.6.1",
 ]
 dev = [
+    "grpcio-tools>=1.80.0",
     "hatch",
 ]
 
