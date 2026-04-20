@@ -45,7 +45,7 @@ export function ChatComposer({ onSubmit, isLoading, className }: ChatComposerPro
         />
         <div className="flex items-center justify-between">
           <p className="text-xs text-muted">
-            Responses stream in real time from the configured gRPC service.
+            Responses stream in real time from the chat service
           </p>
           <Button type="submit" disabled={isLoading}>
             {isLoading ? "Sending..." : "Send message"}

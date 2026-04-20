@@ -120,11 +120,7 @@ export function ChatWorkspace({ userId, sessionId }: WorkspaceProps) {
             <div>
               <h2 className="text-lg font-semibold text-foreground">Chat</h2>
               <p className="mt-1 text-sm text-muted">
-                Real-time responses from{" "}
-                <code className="rounded bg-panelMuted px-1 py-0.5 font-mono text-[13px] text-foreground">
-                  src.memory_demo.grpc_chat
-                </code>{" "}
-                via protected API routes.
+                Real-time chat with web search and memory from Agent Memory Server
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2 rounded-md border border-border bg-panelMuted px-3 py-2">
@@ -136,7 +132,7 @@ export function ChatWorkspace({ userId, sessionId }: WorkspaceProps) {
                 className="h-4 w-4 rounded border-border text-brand focus:ring-2 focus:ring-brand/40"
               />
               <label htmlFor="chat-debug-details" className="text-sm text-foreground">
-                Show debug details
+                Show Tool Responses
               </label>
             </div>
           </div>
