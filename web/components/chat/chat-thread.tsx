@@ -34,8 +34,8 @@ export function ChatThread({ events, isStreaming, showDebugDetails }: ChatThread
     return (
       <Card className="p-6">
         <p className="text-sm text-muted">
-          Tool calls and raw tool payloads are hidden in the compact view. Turn on &quot;Show debug
-          details&quot; to see full tool messages, arguments, and result bodies.
+          Tool calls and raw tool payloads are hidden in the compact view. Enable &quot;Show tool
+          responses&quot; in Settings to see full tool messages, arguments, and result bodies.
         </p>
       </Card>
     );

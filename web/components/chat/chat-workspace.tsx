@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSyncChatErrorState } from "@/components/chat/chat-health-context";
 import { ChatComposer } from "@/components/chat/chat-composer";
 import { ChatThread } from "@/components/chat/chat-thread";
 import type { ChatEvent } from "@/lib/types";
@@ -10,6 +11,7 @@ type WorkspaceProps = {
   userId: string;
   /** Stable per page load; must be generated on the server to avoid hydration mismatches. */
   sessionId: string;
+  showToolResponses: boolean;
 };
 
 type StreamEvent = {
@@ -17,16 +19,17 @@ type StreamEvent = {
   [key: string]: unknown;
 };
 
-export function ChatWorkspace({ userId, sessionId }: WorkspaceProps) {
+export function ChatWorkspace({ userId, sessionId, showToolResponses }: WorkspaceProps) {
   const [events, setEvents] = useState<ChatEvent[]>([]);
   const [isStreaming, setStreaming] = useState(false);
-  const [showDebugDetails, setShowDebugDetails] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const hasError = useMemo(
     () => events.some((evt) => evt.type === "error"),
     [events]
   );
+
+  useSyncChatErrorState(hasError);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -97,43 +100,14 @@ export function ChatWorkspace({ userId, sessionId }: WorkspaceProps) {
       <div className="mx-auto w-full max-w-3xl shrink-0 space-y-4">
         <Card className="p-4">
           <h3 className="text-sm font-semibold text-foreground">Session details</h3>
-          <div className="mt-3 grid gap-2 text-xs text-muted sm:grid-cols-3">
+          <div className="mt-3 grid gap-2 text-xs text-muted sm:grid-cols-2">
             <div className="rounded-md border border-border bg-panelMuted/60 px-3 py-2">
               <p className="text-[11px] uppercase tracking-wide text-muted">User ID</p>
               <p className="mt-1 truncate font-mono text-sm text-foreground">{userId}</p>
             </div>
-            <div className="rounded-md border border-border bg-panelMuted/60 px-3 py-2 sm:col-span-2">
+            <div className="rounded-md border border-border bg-panelMuted/60 px-3 py-2">
               <p className="text-[11px] uppercase tracking-wide text-muted">Session ID</p>
               <p className="mt-1 break-all font-mono text-sm text-foreground">{sessionId}</p>
-            </div>
-            <div className="rounded-md border border-border bg-panelMuted/60 px-3 py-2 sm:col-span-3">
-              <p className="text-[11px] uppercase tracking-wide text-muted">Health</p>
-              <p className={`mt-1 text-sm ${hasError ? "text-red-300" : "text-green-300"}`}>
-                {hasError ? "Attention needed" : "Healthy"}
-              </p>
-            </div>
-          </div>
-        </Card>
-
-        <Card className="p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-foreground">Chat</h2>
-              <p className="mt-1 text-sm text-muted">
-                Real-time chat with web search and memory from Agent Memory Server
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2 rounded-md border border-border bg-panelMuted px-3 py-2">
-              <input
-                id="chat-debug-details"
-                type="checkbox"
-                checked={showDebugDetails}
-                onChange={(e) => setShowDebugDetails(e.target.checked)}
-                className="h-4 w-4 rounded border-border text-brand focus:ring-2 focus:ring-brand/40"
-              />
-              <label htmlFor="chat-debug-details" className="text-sm text-foreground">
-                Show Tool Responses
-              </label>
             </div>
           </div>
         </Card>
@@ -147,7 +121,7 @@ export function ChatWorkspace({ userId, sessionId }: WorkspaceProps) {
           <ChatThread
             events={events}
             isStreaming={isStreaming}
-            showDebugDetails={showDebugDetails}
+            showDebugDetails={showToolResponses}
           />
         </div>
       </div>
