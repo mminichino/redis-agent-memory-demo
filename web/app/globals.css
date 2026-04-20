@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  min-height: 100%;
+}
+
+body {
+  @apply bg-canvas text-foreground antialiased;
+}
+
+a {
+  @apply text-brand transition-colors hover:text-blue-300;
+}

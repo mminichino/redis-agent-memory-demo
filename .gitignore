@@ -163,6 +163,12 @@ cython_debug/
 .idea/
 .vscode/
 *.iml
+node_modules/
+.next/
+web/node_modules/
+web/.next/
+web/.vercel/
+*.tsbuildinfo
 
 # uv lock file
 uv.lock
