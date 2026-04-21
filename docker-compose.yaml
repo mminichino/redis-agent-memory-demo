@@ -4,18 +4,42 @@ networks:
     name: agent-memory-network
 
 volumes:
-  agent_memory_data:
+  agent_memory_data_ams:
     driver: local
-    name: agent-memory-data-volume
+    name: agent-memory-data-ams-volume
+  agent_memory_data_web:
+    driver: local
+    name: agent-memory-data-web-volume
 
 services:
-  redis:
+  redis-ams:
     image: redis:8.4
-    container_name: agent-memory-redis
+    container_name: agent-memory-redis-ams
     ports:
       - "12002:6379"
     volumes:
-      - agent_memory_data:/data
+      - agent_memory_data_ams:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+    networks:
+      - agent_memory_network
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  redis-web:
+    image: redis:8.4
+    container_name: agent-memory-redis-web
+    ports:
+      - "12003:6379"
+    volumes:
+      - agent_memory_data_web:/data
     command: >
       redis-server
       --appendonly yes
@@ -40,7 +64,7 @@ services:
       - path: .env
         required: true
     environment:
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://redis-ams:6379
       - PORT=8000
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GENERATION_MODEL=gpt-5.2-chat-latest
@@ -52,9 +76,10 @@ services:
       - ENABLE_NER=true
       - DISABLE_AUTH=true
     depends_on:
-      - redis
+      - redis-ams
     networks:
       - agent_memory_network
+    restart: unless-stopped
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/v1/health" ]
       interval: 30s
@@ -69,7 +94,7 @@ services:
       - path: .env
         required: true
     environment:
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://redis-ams:6379
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GENERATION_MODEL=gpt-5.2-chat-latest
       - FAST_MODEL=gpt-5-mini
@@ -80,28 +105,48 @@ services:
       - ENABLE_NER=true
       - DISABLE_AUTH=true
     depends_on:
-      - redis
+      - redis-ams
       - api
     command: ["agent-memory", "task-worker"]
     restart: unless-stopped
     networks:
       - agent_memory_network
 
-  demo:
+  grpc-server:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: agent-memory-demo:latest
-    container_name: agent-memory-demo
+      dockerfile: Dockerfile.grpc
+    image: agent-memory-demo-api:latest
+    container_name: agent-memory-demo-api
     environment:
       - AGENT_MEMORY_SERVER_URL=http://api:8000
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
     depends_on:
-      - redis
+      - redis-ams
       - api
+      - task-worker
     ports:
-      - "8080:7860"
+      - "8088:8088"
+    restart: unless-stopped
+    networks:
+      - agent_memory_network
+
+  web-server:
+    build:
+      context: web
+      dockerfile: Dockerfile
+    image: agent-memory-demo-web:latest
+    container_name: agent-memory-demo-web
+    environment:
+      - REDIS_HOST=redis-web
+      - REDIS_PORT=6379
+      - CHAT_API_URL=http://grpc-server:8088
+    depends_on:
+      - redis-web
+      - grpc-server
+    ports:
+      - "3000:3000"
     restart: unless-stopped
     networks:
       - agent_memory_network

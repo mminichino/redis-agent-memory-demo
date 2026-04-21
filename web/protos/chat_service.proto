@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package memory_demo.chat.v1;
+
+service ChatService {
+  rpc ProcessInput(ProcessInputRequest) returns (stream BaseMessageChunk);
+}
+
+message ProcessInputRequest {
+  string content = 1;
+  string session_id = 2;
+  string user_id = 3;
+}
+
+message BaseMessageChunk {
+  string message_json = 1;
+}
