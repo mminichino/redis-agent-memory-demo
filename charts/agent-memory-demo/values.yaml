@@ -3,9 +3,9 @@
 name: agent-memory-demo
 service: agent-memory-demo
 replicaCount: 1
-storage: 2Gi
-storageClass: ""
-password: ""
+dbName: "dbweb"
+dbPort: 10100
+clusterName: ""
 
 server:
   service: "agent-memory-server"
@@ -21,6 +21,7 @@ secrets:
   tavily: "tavily-api-key-demo-secret"
   password: "agent-memory-demo-password"
   url: "agent-memory-server-url"
+  redis: "agent-memory-db-password"
 
 dns:
   domain: ""

@@ -42,9 +42,14 @@ spec:
           imagePullPolicy: Always
           env:
             - name: REDIS_HOST
-              value: localhost
+              value: "{{ .Values.dbName }}.{{ .Release.Namespace }}.svc.cluster.local"
             - name: REDIS_PORT
-              value: "6379"
+              value: "{{ .Values.dbPort}}"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.redis }}
+                  key: password
             - name: CHAT_API_URL
               value: "http://localhost:8088"
             - name: ADMIN_USER
@@ -58,22 +63,3 @@ spec:
             - name: http
               containerPort: 3000
               protocol: TCP
-        - name: agent-memory-demo-redis
-          image: "docker.io/library/redis:{{ .Values.app.redisVersion }}"
-          imagePullPolicy: Always
-          ports:
-            - name: redis
-              containerPort: 6379
-              protocol: TCP
-          volumeMounts:
-            - name: redis-config
-              mountPath: /usr/local/etc/redis/
-            - name: redis-data
-              mountPath: /data
-      volumes:
-        - name: redis-config
-          configMap:
-            name: agent-memory-demo-redis-config
-        - name: redis-data
-          persistentVolumeClaim:
-            claimName: agent-memory-demo-data-pvc

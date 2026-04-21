@@ -1,0 +1,26 @@
+apiVersion: app.redislabs.com/v1alpha1
+kind: RedisEnterpriseDatabase
+metadata:
+  name: {{ .Values.dbName }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": pre-install,post-delete
+    "helm.sh/hook-weight": "0"
+  labels:
+    app: redis-database
+spec:
+  redisEnterpriseCluster:
+  {{- if .Values.clusterName }}
+    name: {{ .Values.clusterName }}
+  {{- else }}
+    name: {{ printf "%s-cluster" .Release.Namespace }}
+  {{- end }}
+  memorySize: "256MB"
+  databaseSecretName: {{ .Values.secrets.redis }}
+  replication: true
+  shardCount: 1
+  shardsPlacement: sparse
+  type: redis
+  databasePort: {{ .Values.dbPort }}
+  persistence: aofEverySecond
+  evictionPolicy: noeviction
