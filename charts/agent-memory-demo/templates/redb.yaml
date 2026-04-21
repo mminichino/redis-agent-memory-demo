@@ -16,7 +16,6 @@ spec:
     name: {{ printf "%s-cluster" .Release.Namespace }}
   {{- end }}
   memorySize: "256MB"
-  databaseSecretName: {{ .Values.secrets.redis }}
   replication: true
   shardCount: 1
   shardsPlacement: sparse

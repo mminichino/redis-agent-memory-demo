@@ -48,7 +48,7 @@ spec:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secrets.redis }}
+                  name: {{ .Values.dbName }}
                   key: password
             - name: CHAT_API_URL
               value: "http://localhost:8088"

@@ -21,7 +21,6 @@ secrets:
   tavily: "tavily-api-key-demo-secret"
   password: "agent-memory-demo-password"
   url: "agent-memory-server-url"
-  redis: "agent-memory-db-password"
 
 dns:
   domain: ""
