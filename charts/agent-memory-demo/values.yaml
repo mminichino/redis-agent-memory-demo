@@ -3,6 +3,8 @@
 name: agent-memory-demo
 service: agent-memory-demo
 replicaCount: 1
+storage: 2Gi
+storageClass: ""
 password: ""
 
 server:
@@ -26,7 +28,9 @@ dns:
 ingress:
   enabled: true
   type: "haproxy"
-  username: "redis"
+
+app:
+  username: "admin"
   password: "password"
 
 tls:

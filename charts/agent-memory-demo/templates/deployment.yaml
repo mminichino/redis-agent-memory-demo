@@ -14,8 +14,8 @@ spec:
         app: agent-memory-demo
     spec:
       containers:
-        - name: agent-memory-demo
-          image: "docker.io/mminichino/agent-memory-demo:{{ .Chart.AppVersion }}"
+        - name: agent-memory-demo-api
+          image: "docker.io/mminichino/agent-memory-demo-api:latest"
           imagePullPolicy: Always
           env:
             - name: AGENT_MEMORY_SERVER_URL
@@ -35,5 +35,45 @@ spec:
                   key: OPENAI_API_KEY
           ports:
             - name: http
-              containerPort: 7860
+              containerPort: 8088
               protocol: TCP
+        - name: agent-memory-demo-web
+          image: "docker.io/mminichino/agent-memory-demo-web:latest"
+          imagePullPolicy: Always
+          env:
+            - name: REDIS_HOST
+              value: localhost
+            - name: REDIS_PORT
+              value: "6379"
+            - name: CHAT_API_URL
+              value: "http://localhost:8088"
+            - name: ADMIN_USER
+              value: {{ .Values.app.username }}
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.password }}
+                  key: password
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+        - name: agent-memory-demo-redis
+          image: "docker.io/library/redis:8.6"
+          imagePullPolicy: Always
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          volumeMounts:
+            - name: redis-config
+              mountPath: /usr/local/etc/redis/
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-config
+          configMap:
+            name: agent-memory-demo-redis-config
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: agent-memory-demo-data-pvc
