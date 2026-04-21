@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { AppShellStatus } from "@/components/app-shell-status";
-import { Button } from "@/components/ui/button";
+import { LogoutForm } from "@/components/logout-form";
 import type { Account } from "@/lib/types";
 
 type AppShellProps = {
@@ -43,11 +43,7 @@ export function AppShell({ user, children }: AppShellProps) {
               <p>{user.first_name || user.user_id}</p>
               <p>{user.user_id}</p>
             </div>
-            <form action="/api/auth/logout" method="post">
-              <Button variant="secondary" type="submit">
-                Log out
-              </Button>
-            </form>
+            <LogoutForm />
           </nav>
         </div>
       </header>

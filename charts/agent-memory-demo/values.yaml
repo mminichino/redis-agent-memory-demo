@@ -32,6 +32,9 @@ ingress:
 app:
   username: "admin"
   password: "password"
+  apiVersion: 0.3.0
+  webVersion: 0.1.1
+  redisVersion: 8.6
 
 tls:
   enabled: true

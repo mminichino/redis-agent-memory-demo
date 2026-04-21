@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: agent-memory-demo-api
-          image: "docker.io/mminichino/agent-memory-demo-api:latest"
+          image: "docker.io/mminichino/agent-memory-demo-api:{{ .Values.app.apiVersion }}"
           imagePullPolicy: Always
           env:
             - name: AGENT_MEMORY_SERVER_URL
@@ -38,7 +38,7 @@ spec:
               containerPort: 8088
               protocol: TCP
         - name: agent-memory-demo-web
-          image: "docker.io/mminichino/agent-memory-demo-web:latest"
+          image: "docker.io/mminichino/agent-memory-demo-web:{{ .Values.app.webVersion }}"
           imagePullPolicy: Always
           env:
             - name: REDIS_HOST
@@ -59,7 +59,7 @@ spec:
               containerPort: 3000
               protocol: TCP
         - name: agent-memory-demo-redis
-          image: "docker.io/library/redis:8.6"
+          image: "docker.io/library/redis:{{ .Values.app.redisVersion }}"
           imagePullPolicy: Always
           ports:
             - name: redis
