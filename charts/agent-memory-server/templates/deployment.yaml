@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: agent-memory-server
-          image: "{{ .Values.registry }}/{{ .Values.repository }}/{{ .Values.image }}:{{ .Values.tag }}"
+          image: "{{ .Values.registry }}/{{ .Values.repository }}/{{ .Values.image }}:{{ .Chart.AppVersion }}"
           imagePullPolicy: Always
           env:
             - name: DISABLE_AUTH
@@ -51,7 +51,7 @@ spec:
               containerPort: {{ .Values.port }}
               protocol: TCP
         - name: agent-memory-worker
-          image: "{{ .Values.registry }}/{{ .Values.repository }}/{{ .Values.image }}:{{ .Values.tag }}"
+          image: "{{ .Values.registry }}/{{ .Values.repository }}/{{ .Values.image }}:{{ .Chart.AppVersion }}"
           command: [ "agent-memory" ]
           args: [ "task-worker" ]
           imagePullPolicy: Always

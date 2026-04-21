@@ -8,7 +8,6 @@ enableNer: "true"
 registry: "docker.io"
 repository: "redislabs"
 image: "agent-memory-server"
-tag: "latest"
 port: 8000
 
 model:
