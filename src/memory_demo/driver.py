@@ -6,11 +6,12 @@ import time
 import logging
 import traceback
 import textwrap
+from asyncio import AbstractEventLoop
 
 from dateutil.parser import ParserError
 from jinja2 import Template
 from dateutil import parser as date_parser
-from typing import Any, AsyncGenerator, Generator, Optional, Sequence
+from typing import Any, AsyncGenerator, Generator, Optional, Sequence, Literal, get_args, cast
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from agent_memory_client import MemoryAPIClient, MemoryClientConfig
@@ -22,6 +23,7 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage, SystemM
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
@@ -115,6 +117,15 @@ web_search_function = {
     },
 }
 
+supported_models = Literal[
+    "gpt-3.5-turbo", "gpt-3.5-turbo-16k", "gpt-4", "gpt-4-32k", "gpt-4o", "gpt-4o-mini", "o1", "o1-mini", "o3-mini",
+    "gpt-5-mini", "gpt-5-nano", "gpt-5.1-chat-latest", "gpt-5.2-chat-latest", "text-embedding-ada-002",
+    "text-embedding-3-small", "text-embedding-3-large", "claude-3-opus-20240229", "claude-3-sonnet-20240229",
+    "claude-3-haiku-20240307", "claude-3-5-sonnet-20240620", "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022", "claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest",
+    "claude-3-opus-latest"
+]
+
 
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -132,7 +143,7 @@ class ChatWithMemory:
             fast_model: str = "gpt-4o",
             ams_url: str = "http://localhost:8000",
             namespace: str = "default",
-            *,
+            enable_sync_methods: bool = True,
             smart_chat_model: BaseChatModel | None = None,
     ):
         self.error_count = 0
@@ -164,11 +175,25 @@ class ChatWithMemory:
         self.smart_llm = base_smart.bind_tools(available_functions)
         self.fast_llm = ChatOpenAI(model=self.fast_model)
 
-        try:
-            self.loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
+        self.loop = None
+        if enable_sync_methods:
+            try:
+                self.loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self.loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self.loop)
+
+    def event_loop(self) -> AbstractEventLoop:
+        if self.loop is None:
+            raise ValueError("Event loop not initialized.")
+        return self.loop
+
+    @staticmethod
+    def to_model_literal(s: str) -> supported_models:
+        allowed = get_args(supported_models)
+        if s not in allowed:
+            raise ValueError(f"{s!r} is not a valid value. Expected one of {allowed}")
+        return cast(supported_models, s)
 
     def increment_error_count(self) -> None:
         self.error_count += 1
@@ -220,7 +245,7 @@ class ChatWithMemory:
                 elif role == "user":
                     out.append(HumanMessage(content=content))
                 elif role == "assistant":
-                    tc = m.get("tool_calls")
+                    tc: list | None = m.get("tool_calls")
                     if tc:
                         first = tc[0] if tc else None
                         if isinstance(first, dict) and first.get("type") == "function" and "function" in first:
@@ -309,9 +334,6 @@ class ChatWithMemory:
     def query_smart_llm(self, context: str, messages: list[dict | BaseMessage]) -> AIMessage:
         if len(messages) > 0 and isinstance(messages[0], SystemMessage):
             messages = messages[1:]
-        for m in messages:
-            if isinstance(m, HumanMessage):
-                logger.info(f"smart llm message:\n{textwrap.indent(self._assistant_content_str(m.content), '  ')}")
         message_list: list[BaseMessage] = [
             SystemMessage(content=context)
         ]
@@ -319,16 +341,18 @@ class ChatWithMemory:
         response = self.smart_llm.invoke(message_list)
         return response
 
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
     async def get_working_memory(self, session_id: str, user_id: str) -> WorkingMemory:
         logger.info(f"Get working memory: {user_id} ({session_id})")
         created, result = await self.memory_client.get_or_create_working_memory(
             session_id=session_id,
             user_id=user_id,
             namespace=self._get_namespace(user_id),
-            model_name=self.smart_model,
+            model_name=self.to_model_literal(self.smart_model),
         )
         return WorkingMemory(**result.model_dump())
 
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
     async def add_message_to_working_memory(
             self,
             session_id: str,
@@ -351,6 +375,7 @@ class ChatWithMemory:
             model_name=self.smart_model,
         )
 
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
     async def add_message_to_long_term_memory(
             self,
             session_id: str,
@@ -421,7 +446,8 @@ class ChatWithMemory:
             content: str,
             timestamp: datetime,
     ):
-        return self.loop.run_until_complete(
+        loop = self.event_loop()
+        return loop.run_until_complete(
             self.long_term_memory_async(
                 session_id,
                 user_id,
@@ -430,6 +456,7 @@ class ChatWithMemory:
             )
         )
 
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
     async def _search_web(self, query: str) -> str:
         try:
             logger.info(f"Searching the web for: {query}")
@@ -568,7 +595,6 @@ class ChatWithMemory:
             logger.error(f"Error generating response: {e}", exc_info=True)
             raise
 
-    @retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
     async def process_input_async(
             self,
             content: str,
@@ -607,13 +633,14 @@ class ChatWithMemory:
         user_id: str,
         timestamp: Optional[datetime] = None,
     ) -> Generator[BaseMessage]:
+        loop = self.event_loop()
         agen = self.process_input_async(user_input, session_id, user_id, timestamp)
         try:
             while True:
                 try:
-                    msg = self.loop.run_until_complete(agen.__anext__())
+                    msg = loop.run_until_complete(agen.__anext__())
                 except StopAsyncIteration:
                     break
                 yield msg
         finally:
-            self.loop.run_until_complete(agen.aclose())
+            loop.run_until_complete(agen.aclose())
