@@ -3,6 +3,26 @@ entries:
   agent-memory-demo:
   - apiVersion: v2
     appVersion: 0.3.0
+    created: "2026-04-27T16:05:02.280683476Z"
+    description: Redis Agent Memory Server Demo
+    digest: ee7398627cb50b4f0c57ca3ce6f047eb8dd281cc2a90ef1741a7a7561ac58c91
+    home: https://github.com/mminichino/redis-agent-memory-demo
+    keywords:
+    - agent
+    - memory
+    - redis
+    maintainers:
+    - name: Michael Minichino
+      url: https://github.com/mminichino/redis-agent-memory-demo
+    name: agent-memory-demo
+    sources:
+    - https://github.com/mminichino/redis-agent-memory-demo
+    type: application
+    urls:
+    - https://github.com/mminichino/redis-agent-memory-demo/releases/download/agent-memory-demo-0.3.6/agent-memory-demo-0.3.6.tgz
+    version: 0.3.6
+  - apiVersion: v2
+    appVersion: 0.3.0
     created: "2026-04-27T15:14:19.399833094Z"
     description: Redis Agent Memory Server Demo
     digest: dc67d090544138c264ff0c1da638312c7fd479eb676d45a2bee7a794a2172b6d
@@ -462,4 +482,4 @@ entries:
     urls:
     - https://github.com/mminichino/redis-agent-memory-demo/releases/download/agent-memory-server-0.1.0/agent-memory-server-0.1.0.tgz
     version: 0.1.0
-generated: "2026-04-27T15:14:19.399975029Z"
+generated: "2026-04-27T16:05:02.281037227Z"
