@@ -1,4 +1,4 @@
-{{- if not .Values.multiActive.enabled }}
+{{- if and (not .Values.multiActive.enabled) .Values.createDb }}
 apiVersion: app.redislabs.com/v1alpha1
 kind: RedisEnterpriseDatabase
 metadata:

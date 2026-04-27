@@ -1,4 +1,4 @@
-{{- if .Values.multiActive.enabled }}
+{{- if and .Values.multiActive.enabled .Values.createDb }}
 apiVersion: app.redislabs.com/v1alpha1
 kind: RedisEnterpriseActiveActiveDatabase
 metadata:
@@ -14,6 +14,7 @@ spec:
   globalConfigurations:
     shardCount: 1
     databasePort: {{ .Values.dbPort }}
+    databaseSecretName: "redb-{{ .Values.dbName }}"
     memorySize: "256MB"
     persistence: aofEverySecond
     evictionPolicy: noeviction

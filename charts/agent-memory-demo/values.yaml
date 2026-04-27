@@ -5,6 +5,7 @@ service: agent-memory-demo
 replicaCount: 1
 dbName: "dbweb"
 dbPort: 10100
+createDb: true
 clusterName: ""
 multiActive:
   enabled: false
@@ -53,3 +54,4 @@ externalSecret:
     openai: "openai-api-key"
     tavily: "tavily-api-key"
     password: "demo-ui-password"
+    database: "dbweb-password"
