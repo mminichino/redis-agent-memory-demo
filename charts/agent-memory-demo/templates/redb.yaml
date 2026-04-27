@@ -1,3 +1,4 @@
+{{- if not .Values.multiActive.enabled }}
 apiVersion: app.redislabs.com/v1alpha1
 kind: RedisEnterpriseDatabase
 metadata:
@@ -23,3 +24,4 @@ spec:
   databasePort: {{ .Values.dbPort }}
   persistence: aofEverySecond
   evictionPolicy: noeviction
+{{- end }}

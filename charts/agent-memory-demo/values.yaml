@@ -6,6 +6,10 @@ replicaCount: 1
 dbName: "dbweb"
 dbPort: 10100
 clusterName: ""
+multiActive:
+  enabled: false
+  localCluster: ""
+  remoteCluster: ""
 
 server:
   service: "agent-memory-server"

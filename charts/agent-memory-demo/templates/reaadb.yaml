@@ -1,0 +1,23 @@
+{{- if .Values.multiActive.enabled }}
+apiVersion: app.redislabs.com/v1alpha1
+kind: RedisEnterpriseActiveActiveDatabase
+metadata:
+  name: {{ .Values.dbName }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": pre-install,post-delete
+    "helm.sh/hook-weight": "0"
+spec:
+  participatingClusters:
+    - name: {{ .Values.multiActive.localCluster }}
+    - name: {{ .Values.multiActive.remoteCluster }}
+  globalConfigurations:
+    shardCount: 1
+    databasePort: {{ .Values.dbPort }}
+    memorySize: "256MB"
+    persistence: aofEverySecond
+    evictionPolicy: noeviction
+    replication: true
+    shardsPlacement: sparse
+    tlsMode: replica_ssl
+{{- end }}
